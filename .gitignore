@@ -1,2 +1,9 @@
 #.gitignore
 *.html
+*.xlsx
+*.vcf
+*.bam
+*.sam
+*.csv
+*.json
+*.xml
