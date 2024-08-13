@@ -109,6 +109,3 @@ alter_fun_list <- list(
     grid.rect(x, y, w*0.9, h*0.9, gp = gpar(fill = "#CCCCCC", col = NA))
   }
 )
-
-git clone https://<USERNAME>:<PASSWORD>@github.com/<USERNAME>/<REPO_NAME>.git
-git clone "https://kasondechw:zxhL7%0f`T*3D<i78y8`L9g8S$D!@github.com/mxr893/dang_lab.git"
