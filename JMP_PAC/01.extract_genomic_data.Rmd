@@ -1,0 +1,165 @@
+---
+title: "Jefferson Molecular Profiling Descriptive Analysis"
+author: "Kasonde Chewe"
+file: "01.extract_genomic_data.Rmd"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: html_notebook
+---
+
+- Date: 8/8/2024
+- Author: Kasonde Chewe
+- Description: Script generates a mutation summary report for all cohorts 
+               including (as of DATE) 120 WTS sequenced patients. Results 
+               are used for downstream descriptive analysis. Logging is sent.
+
+```{r}
+# clear environment
+rm(list=ls())
+gc()
+```
+
+
+```{r}
+# Load Libraries ----
+# Load custom helper functions
+function.in <- source("~/Projects/JMP_PAC/00_SCRIPTS_R/bin/R/utilities/helpers.R")
+
+# Install and load required packages
+install_and_load('ggplot2')
+install_and_load('readxl')
+install_and_load('writexl')
+install_and_load('dplyr')
+install_and_load('XML')
+
+```
+
+
+
+
+```{r}
+# Set up logging
+log_file <- "~/Projects/JMP_PAC/00_SCRIPTS_R/logs/generate_mutation_summary.txt"
+log_message <- function(message) {
+  timestamp <- Sys.time()
+  cat(paste0("[", timestamp, "] ", message, "\n"), file = log_file, append = TRUE)
+}
+
+log_message("Script started.")
+```
+
+
+```{r}
+# Load Main Datasets ----
+mst_list <- read_xlsx("~/final-project-dir/JMP_PAC/datasets/clinical/JMP_PaC_NAFLD_n502_Extended_Dataset.xlsx")
+log_message("Main dataset loaded.")
+
+# Extract sub-dataframe of patients with sequencing
+sequenced <- mst_list %>% dplyr::select(`JMP_PAC ID`, `Res_CARIS ID`, 
+                                        `Res_SEQ-WTS (Y/N)`, `Res_SEQ-WES (T/F)`, 
+                                        `NASH/NAFLD Status (Y/N)`)
+# Filter rows where `Res_CARIS ID` is Y only (patients with WTS sequencing)
+wts_sequenced <- sequenced %>% dplyr::filter(`Res_SEQ-WTS (Y/N)` == "Y")
+log_message("Filtered sequenced patients.")
+
+# Load previously saved file paths
+wts_sequenced <- read_xlsx("~/Projects/JMP_PAC/datasets/excels/summaries/jmp_pac_sequenced.xlsx")
+log_message("Loaded XML file paths.")
+
+```
+
+
+```{r}
+# To-Do: Convert to use library(job)
+# Initialize an empty list to store dataframes
+job::job(brm_result = {
+all_test_results_df <- list()
+
+  # Loop through each XML file
+  for (xml_file in wts_sequenced$xml.path) {
+    # Parse the XML file
+    res <- xmlParse(file = xml_file)
+    
+    # Extract the root node
+    rootnode <- xmlRoot(res)
+    
+    # Extract the CARIS ID
+    caris_id_value <- get_node_value_by_name(rootnode, "testDetails", "labReportID")
+    
+    # Extract the JMP_PAC ID
+    jmp_pac_num <- get_node_value_by_name(rootnode, "patientInformation", "firstName")
+    jmp_pac_id <- paste0("JMP_Pac", jmp_pac_num)
+    
+    # Define the fields to extract
+    fields <- c("resultCount", "biomarkerName", "result", "result_group", "gene", "wildtypeBiomarker","hgvsCodingChange",
+                "hgvsProteinChange","chromosome", "exon", "genomicSource", "mhClass", "genotype", "molecularConsequence",
+                "interpretation", "analysisConfigurationName", "analysisConfigurationVersion",
+                "analysisPipelineName", "analysisPipelineVersion", "NGSPanelName", "NGSPanelVersion")
+    
+    # Extract data from each testResults section
+    test_results_nodes <- getNodeSet(rootnode, "//testResults")
+    test_results_data <- lapply(test_results_nodes, function(test_node) {
+      extract_values(test_node, fields)
+    })
+    
+    # Combine data into a dataframe
+    test_results_df <- do.call(rbind, test_results_data)
+    test_results_df <- as.data.frame(test_results_df, stringsAsFactors = FALSE)
+    
+    # Add CARIS_ID and JMP_PAC_ID to each row
+    test_results_df$caris_id_value <- caris_id_value
+    test_results_df$jmp_pac_id <- jmp_pac_id
+    
+    # Reorder columns
+    test_results_df <- test_results_df %>%
+      dplyr::select(caris_id_value, jmp_pac_id, everything())
+    
+    # Append the dataframe to the list
+    all_test_results_df <- append(all_test_results_df, list(test_results_df))
+    
+    # Clean up the memory
+    rm(res, rootnode, caris_id_value, jmp_pac_id, test_results_nodes, test_results_data)
+    gc()
+    
+    log_message(paste("Processed XML file:", xml_file))
+  }
+  
+  # Combine all dataframes into one large dataframe
+  final_test_results_df <- do.call(rbind, all_test_results_df)
+
+  # Filtering for mutation relevant columns only
+  final_test_results_df <- final_test_results_df %>%
+    filter(!is.na(resultCount) & !is.na(biomarkerName))
+  # Control what is returned to the main session
+  job::export(c(final_test_results_df))
+})  # Control what is imported into the job
+
+```
+
+
+
+
+```{r}
+final_test_results_df <- brm_result$final_test_results_df
+
+```
+
+
+```{r}
+# Save the final dataframe to an Excel file 
+writexl::write_xlsx(x = final_test_results_df, path =
+"~/Projects/JMP_PAC/datasets/excels/summaries/jmp_pac_mutation_summary_v2.xlsx")
+```
+
+
+```{r}
+log_message("Final dataframe saved to Excel.")
+
+# Clean up the memory
+rm(final_test_results_df)
+gc()
+
+log_message("Script finished and memory cleaned up.")
+```
+
+
+
