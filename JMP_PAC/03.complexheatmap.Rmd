@@ -5,17 +5,6 @@ date: "`r format(Sys.time(), '%d %B, %Y')`"
 output: html_notebook
 ---
 
-
-## Todo list 
-<! -- Todo: point to source code generating datasets below neatly -->
-<! -- Todo: modify code into reusable functions -->
-<! -- Todo: migrate data to SQL? -->
-<! -- Todo: is there a significant difference in KRAS mutation frequecies between fatty and non-fatty LD groups? -->
-<! -- Todo: compute surival difference (kaplan meier curve and hazard ratios)? -->
-<! -- Todo: extract mutation and q-values from vcf files? -->
-<! -- Todo: rebuild variant calling pipeline locally? -->
-
-
 # Technical
 #### last modified: 08/15/2024
 
@@ -38,7 +27,7 @@ gc()
 
 
 ```{r}
-source("~/Projects/JMP_PAC/00_SCRIPTS_R/bin/R/utilities/02.oncoplot_helpers.R")
+source("02.oncoplot_helpers.R")
 
 # Load libraries
 suppressPackageStartupMessages(library(ComplexHeatmap))
@@ -199,6 +188,7 @@ pdf("~/Projects/JMP_PAC/figures/oncoprint/oncoplot_n120_jmppac_all_patients_top3
 generate_oncoplot(sorted_final_matrix, "Fig-1: JMP PAC Molecular Profile PDAC Oncoplot n=120 ")
 dev.off()
 ```
+
 
 ```{r GENERATE ONCOPLOT, fig.width=24, fig.height=11}
 generate_oncoplot(sorted_final_matrix, "Fig-1: JMP PAC Molecular Profile PDAC Oncoplot n=120 ")
