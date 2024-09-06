@@ -57,14 +57,15 @@ Each dataset is crucial for building a robust analysis framework, aiding in the 
 
 ```{r}
 # Load Mutation Summaries from CARIS REPORTS
-sreport_sheet3 <- read_xlsx(path = "~/Projects/JMP_PAC/datasets/excels/summaries/jmp_pac_mutation_summary_v2.xlsx") # update for final pipeline (mutation summary report)
+setwd("/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC/datasets")
+sreport_sheet3 <- read_xlsx(path = "/excels/summaries/jmp_pac_mutation_summary_v2.xlsx") # update for final pipeline (mutation summary report)
 head(sreport_sheet3)
 dim(sreport_sheet3)
 colnames(sreport_sheet3)
 cat("Mutation Summaries loaded!!!\n")
 
 # Load Main Datasets ----
-mst_list <- read_xlsx("~/final-project-dir/JMP_PAC/datasets/clinical/JMP_PaC_NAFLD_n502_Extended_Dataset.xlsx")
+mst_list <- read_xlsx("/excels/JMP_PaC_NAFLD_n502_Extended_Dataset.xlsx")
 head(mst_list)
 dim(mst_list)
 colnames(mst_list)
@@ -79,7 +80,7 @@ wts_sequenced <- sequenced %>% dplyr::filter(`Res_SEQ-WTS (Y/N)` == "Y")
 cat("Filtered sequenced patients.\n")
 
 # Load previously saved file paths
-wts_sequenced <- read_xlsx("~/Projects/JMP_PAC/datasets/excels/summaries/jmp_pac_sequenced.xlsx")
+wts_sequenced <- read_xlsx("/excels/summaries/jmp_pac_sequenced.xlsx")
 cat("Loaded XML file paths!!!\n")
 
 ```
@@ -184,7 +185,7 @@ This report includes a summary report for the current 120 patients who have reci
 Though unclear, variant calling is assumed to be conducted against hg38 as the "normal" reference. A custom variant calling pipeline is under works
 
 ```{r SAVE ONCOPLOT, fig.width=24, fig.height=11}
-pdf("~/Projects/JMP_PAC/figures/oncoprint/oncoplot_n120_jmppac_all_patients_top30_mutated_genes.pdf", width = 24, height = 11)
+pdf("../figures/oncoprint/oncoplot_n120_jmppac_all_patients_top30_mutated_genes.pdf", width = 24, height = 11)
 generate_oncoplot(sorted_final_matrix, "Fig-1: JMP PAC Molecular Profile PDAC Oncoplot n=120 ")
 dev.off()
 ```
@@ -249,7 +250,7 @@ summary(risk_factors)
 ```
 
 ```{r, fig.width=24, fig.height=11}
-pdf("~/Projects/JMP_PAC/figures/oncoprint/figa1_oncoplot_n120_jmppac_all_patients_top30_mutated_genes.pdf", width = 22, height = 11)
+pdf("../figures/oncoprint/figa1_oncoplot_n120_jmppac_all_patients_top30_mutated_genes.pdf", width = 22, height = 11)
 generate_oncoplot_with_anno(sorted_final_matrix, "FigA1: JMP PAC Molecular Profile PDAC Oncoplot n=120 ")
 dev.off()
 ```
@@ -328,7 +329,7 @@ generate_oncoplot(nafld_matrix, "Fig-2: NAFLD Profile PDAC Oncoplot n=43")
 ```
 
 ```{r SAVE NAFLD ONCOPLOT, fig.width=24, fig.height=11}
-pdf("~/Projects/JMP_PAC/figures/oncoprint/oncoplot_n43_jmppac_NAFLD_patients_top30_mutated_genes.pdf", width = 24, height = 11)
+pdf("../figures/oncoprint/oncoplot_n43_jmppac_NAFLD_patients_top30_mutated_genes.pdf", width = 24, height = 11)
 generate_oncoplot(nafld_matrix, "Fig-2: NAFLD Profile PDAC Oncoplot n=43")
 dev.off()
 ```
@@ -341,7 +342,7 @@ generate_oncoplot(nfld_matrix, "Fig-3: non-NAFLD Profile PDAC Oncoplot n=77")
 ```
 
 ```{r SAVE non-NAFLD ONCOPLOT, fig.width=24, fig.height=11}
-pdf("~/Projects/JMP_PAC/figures/oncoprint/oncoplot_n77_jmppac_NAFLD_patients_top30_mutated_genes.pdf", width = 24, height = 11)
+pdf("../figures/oncoprint/oncoplot_n77_jmppac_NAFLD_patients_top30_mutated_genes.pdf", width = 24, height = 11)
 generate_oncoplot(nfld_matrix, "Fig-3: Non-NAFLD Profile PDAC Oncoplot n=77")
 dev.off()
 ```
@@ -429,7 +430,7 @@ PieDonut(mutation_counts, aes(pies = hgvsCodingChange, donuts=hgvsProteinChange,
 ```{r SAVE PIE CHART KRAS MUTATION FREQUENCIES n120, fig.width=8, fig.height=8}
 options(digits=2)
 # Create a Donut Chart
-pdf("~/Projects/JMP_PAC/figures/KRAS/pie_chart_kras_mutations_freq_n120_wes.pdf", width = 8, height = 8)
+pdf("../figures/oncoprint/pie_chart_kras_mutations_freq_n120_wes.pdf", width = 8, height = 8)
 PieDonut(mutation_counts, aes(pies = hgvsCodingChange, donuts=hgvsProteinChange, count = n), 
          ratioByGroup = FALSE,
          showRatioThreshold = 0,
@@ -446,7 +447,7 @@ dev.off()
 
 
 ```{r V2 SAVE PIE CHART KRAS MUTATION FREQUENCIES & BASE CHANGE n120, fig.width=8, fig.height=8}
-pdf("~/Projects/JMP_PAC/figures/KRAS/pie_chart_kras_mutations_and_base_change_freq_n120_wes.pdf", width = 8, height = 8)
+pdf("../figures/oncoprint/pie_chart_kras_mutations_and_base_change_freq_n120_wes.pdf", width = 8, height = 8)
 PieDonut(mutation_counts, aes(pies = hgvsCodingChange, donuts=hgvsProteinChange, count = n), 
          ratioByGroup = FALSE,
          showRatioThreshold = 0,
@@ -553,188 +554,10 @@ ggarrange(p1,p2, ncol = 2)
 
 
 ```{r}
-pdf("~/Projects/JMP_PAC/figures/KRAS/pie_chart_FLvsNFLD_kras_mutations_and_base_change_freq_n43vsn77_wes.pdf", width = 13, height = 10)
+pdf("../figures/oncoprint/pie_chart_FLvsNFLD_kras_mutations_and_base_change_freq_n43vsn77_wes.pdf", width = 13, height = 10)
 ggarrange(p1,p2, ncol = 2)
 dev.off()
 ```
-## Whole Transcriptomics Analysis 
-The following section includes the generation of a TPM matrix for 120 WTS JMP PAC patients
-
-
-```{r}
-# # Generate WTS Gene Counts Matrix N=120
-# gene_counts_matrix <- create_gene_counts_matrix(wts_sequenced, "JMP_PAC ID", "tsv.path")
-# dim(gene_counts_matrix)
-# head(gene_counts_matrix)
-# 
-# saveRDS(gene_counts_matrix, file = "/oceanus/collab/InternalJeff/users/kxc732/Projects/JMP_PAC/datasets/RDS/wts_120_TPM_norm.Rds")
-
-# Load gene counts 
-g.counts.matrix <- readRDS("/oceanus/collab/InternalJeff/users/kxc732/Projects/JMP_PAC/datasets/RDS/wts_120_TPM_norm.Rds")
-dim(g.counts.matrix)
-# head(g.counts.matrix)
-
-
-
-
-```
-
-```{r}
-source("~/Projects/JMP_PAC/00_SCRIPTS_R/bin/R/utilities/02.oncoplot_helpers.R")
-
-library(dplyr)
-library(ggplot2)
-library(ggprism)
-# Assuming gene_counts_matrix is already created
-# Extract values for a specific gene, e.g., "NELFE"
-gene <- "HSD17b13"
-group <- "Obesity Status"
-risk_factor <- "Obesity"
-NELFE_exp <- extract_gene_values(g.counts.matrix, gene)
-
-# Print the dimensions and the first few rows of the resulting data frame
-print(dim(NELFE_exp))
-print(head(NELFE_exp))
-
-
-# Add a column Obesity Status 
-risk_factors <- as.data.frame(risk_factors)
-print(dim(risk_factors))
-print(head(risk_factors))
-
-
-# Merge obesity status 
-NELFE_exp <- merge(NELFE_exp, risk_factors[, c("JMP_PAC ID", risk_factor)], by = "JMP_PAC ID", all.x = TRUE)
-print(dim(NELFE_exp))
-print(head(NELFE_exp))
-
-NELFE_exp[NELFE_exp$`JMP_PAC ID` == "JMP_Pac071",]$Fatty_Liver_Disease = "N"
-
-# Save Obese
-# write_xlsx(NELFE_exp, "~/Projects/JMP_PAC/datasets/excels/jmp_pac_nelfe_expression_n120.xlsx" )
-# write_csv(NELFE_exp, "~/Projects/JMP_PAC/datasets/csv/jmp_pac_nelfe_expression_n120.csv" )
-
-# Obese MASLD vs Non-Obese MASLD 
-# Create the boxplot
-ggplot(NELFE_exp, aes(x = Obesity, y = log2(`Expression (TPM)`), fill = Obesity)) +
-  geom_boxplot() +
-  geom_jitter() +
-  labs(title = paste0("Gene Expression of ", gene, " by ", group),
-       x = group,
-       y = "Expression (TPM)") +
-  theme_minimal() +
-  scale_fill_manual(values = c("Y" = "#FF9999", "N" = "#9999FF"))  # Optional: Custom colors for obese and non-obese
-
-```
-
-
-
-```{r}
-# Load necessary libraries
-library(ggplot2)
-library(dplyr)
-
-# Subset the data into two groups: Obese and Non-Obese
-obese_group <- NELFE_exp$`Expression (TPM)`[NELFE_exp$Obesity == "Y"]
-non_obese_group <- NELFE_exp$`Expression (TPM)`[NELFE_exp$Obesity == "N"]
-
-
-# Function to calculate mean, median, sd, and 95% CI
-calculate_stats <- function(data) {
-  len_value <- length(data)
-  mean_value <- mean(data)
-  median_value <- median(data)
-  sd_value <- sd(data)
-  n <- length(data)
-  error_margin <- qt(0.975, df = n-1) * sd_value / sqrt(n)
-  ci <- c(mean_value - error_margin, mean_value + error_margin)
-  
-  return(list(length = len_value, mean = mean_value, median = median_value, sd = sd_value, ci = ci))
-}
-
-# Calculate stats for obese group
-obese_stats <- calculate_stats(log2(obese_group + 0.0001))
-# Calculate stats for non-obese group
-non_obese_stats <- calculate_stats(log2(non_obese_group + 0.0001))
-
-# Print results
-print("Obese Group Statistics:")
-print(obese_stats)
-
-print("Non-Obese Group Statistics:")
-print(non_obese_stats)
-
-
-
-```
-
-
-
-```{r}
-# Histogram and Q-Q plot for Obese group
-ggplot(data.frame(Expression = log2(obese_group + 0.0001)), aes(x = Expression)) +
-  geom_histogram(binwidth = 0.5, fill = "red", alpha = 0.7) +
-  labs(title = "Histogram of Log2(Expression) for Obese Group",
-       x = "Log2(Expression (TPM) + 0.0001)",
-       y = "Frequency")
-
-ggplot(data.frame(Expression = log2(obese_group + 0.0001)), aes(sample = Expression)) +
-  geom_qq() +
-  geom_qq_line() +
-  labs(title = "Q-Q Plot for Log2(Expression) - Obese Group")
-
-# Histogram and Q-Q plot for Non-Obese group
-ggplot(data.frame(Expression = log2(non_obese_group + 0.0001)), aes(x = Expression)) +
-  geom_histogram(binwidth = 0.5, fill = "black", alpha = 0.7) +
-  labs(title = "Histogram of Log2(Expression) for Non-Obese Group",
-       x = "Log2(Expression (TPM) + 0.0001)",
-       y = "Frequency")
-
-ggplot(data.frame(Expression = log2(non_obese_group + 0.0001)), aes(sample = Expression)) +
-  geom_qq() +
-  geom_qq_line() +
-  labs(title = "Q-Q Plot for Log2(Expression) - Non-Obese Group")
-
-```
-
-
-
-
-```{r, fig.height=8, fig.width=10}
-# Load necessary libraries
-library(ggpubr)
-library(ggplot2)
-options(digits = 3)
-# Add a new column to the dataframe with log2 + 1 transformation
-NELFE_exp$log2_TPM <- log2(NELFE_exp$`Expression (TPM)` + 1)
-
-
-# Perform the statistical tests and compare the means using ggpubr
-stat_test <- compare_means(log2_TPM ~ Fatty_Liver_Disease, 
-                           data = NELFE_exp, 
-                           method = "t.test")
-
-# Print the test results
-print(stat_test)
-g_title <- as.character(paste0("Gene Expression of ", gene, " by ", group, " N=", dim(NELFE_exp)[1], " (BMI > 30)"))
-
-# Save the plot with statistical annotations
-#pdf("~/Projects/JMP_PAC/figures/obesity_status/boxplot_nelfe_obesity_stat_bmi_30.pdf", width = 12, height = 10)
-# Create the boxplot with log2 + 1 transformation, custom outlines, and statistical annotation
-ggplot(NELFE_exp, aes(x = Obesity, y = log2(`Expression (TPM)` + 1), color = Obesity)) +
-  geom_boxplot(fill = NA, size = 1) +  # Use fill = NA for no fill, and size = 1 for thicker lines
-  geom_jitter(width = 0.2) +
-  labs(title = g_title,
-       x = "Obesity Status",
-       y = "Log2(Expression (TPM) + 1)") +
-  theme_prism(base_size = 20, border = TRUE, base_rect_size  = 3) +
-  scale_color_manual(values = c("Y" = "red", "N" = "black")) +  # Red for Obese, Black for Non-Obese
-  stat_compare_means(method = "t.test", label = "p.format", label.y = 6, label.x = 1.5, size=6)  # Add p-value to the plot
-#dev.off()
-
-```
-
-
 
 
 
