@@ -1,19 +1,22 @@
 #!/usr/bin/env Rscript
+# Title: PRR Analysis for GRO-seq Data Helper Functions
+# Author(s): 
+# Associated Manuscript: [Title of Manuscript]
+# Journal: [Journal Name], 2024
+# Corresponding Author: 
+# Date: [YYYY-MM-DD]
+# Purpose: This script includes associated helper functions in GRO-seq PRR and PI 
 
 
-# Define the function for creating a density correlatin plot for two columns
+# Function for creating a density correlatin plot for two columns
 correlation_c2 <- function(data, col1, col2, title=NULL){
   # Check if the specified columns exist in the dataframe
   if (!col1 %in% names(data) | !col2 %in% names(data)) {
     stop("Specified columns do not exist in the dataframe")
   }
-  
-  
-  
 }
 
-
-# Define the function for creating boxplots for two columns
+# Function for creating boxplots for two columns
 boxplot_c2 <- function(data, col1, col2, title=NULL) {
   # Check if the specified columns exist in the dataframe
   if (!col1 %in% names(data) | !col2 %in% names(data)) {
@@ -37,7 +40,7 @@ boxplot_c2 <- function(data, col1, col2, title=NULL) {
 }
 
 
-# Define the IQR filtering function
+# Function for the IQR filtering function
 iqr_filter <- function(data, col1, col2) {
   # Calculate the IQR for col1
   Q1_col1 <- quantile(data[[col1]], 0.05, na.rm = TRUE)
@@ -49,7 +52,7 @@ iqr_filter <- function(data, col1, col2) {
   Q3_col2 <- quantile(data[[col2]], 0.95, na.rm = TRUE)
   IQR_col2 <- Q3_col2 - Q1_col2
   
-  # Define the cutoff for outliers
+  # Function for the cutoff for outliers
   cutoff_low_col1 <- Q1_col1 - 1.5 * IQR_col1
   cutoff_high_col1 <- Q3_col1 + 1.5 * IQR_col1
   cutoff_low_col2 <- Q1_col2 - 1.5 * IQR_col2
@@ -63,17 +66,11 @@ iqr_filter <- function(data, col1, col2) {
 }
 
 
-
-# generate ECDF from 2 column data 
+# Function to generate ECDF from 2 column data 
 generate_ecdf <- function(df, col1, col2, ps = 1){
-  
-  # automatically compute log2
+  # Compute log2
   df$log2_EV <- log2(df$col1 + ps)
   df$log2_KO <- log2(df$col2 + ps)
-  
-  
-  
-  
   ecdf_ev <- ecdf(df$log2_EV)
   ecdf_ko <- ecdf(df$log2_KO)
   
@@ -82,15 +79,12 @@ generate_ecdf <- function(df, col1, col2, ps = 1){
        xlab = "log2(PI + pseudocount) Value", ylab = "ECDF", xlim = c(-8, 6))
   lines(ecdf_ko, col = "red")
   
-
   # Add a legend
   legend("bottomright", legend = c("log2(PI_EV)", "log2(PI_KO)"), col = c("blue", "red"), lty = 1)
 }
 
-
+# Function creates 3 low, medium and high tertiled boxplots on a single graph
 create_double_tertile_boxplot<- function(data, ev_col_name, ko_col_name, title=NULL, saveas=NULL, csv=NULL) {
-  # Function creates 3 low, medium and high tertiled boxplots on a single graph
-  # Ensure the column names are character strings
   ev_col_name <- as.character(substitute(ev_col_name))
   ko_col_name <- as.character(substitute(ko_col_name))
   
@@ -133,12 +127,11 @@ create_double_tertile_boxplot<- function(data, ev_col_name, ko_col_name, title=N
   } else {
     print(p)
   }
-} # complete
+} 
 
 
-
+# Function to compute KO, EV log fold change
 generate_pausing_ratio_across_tertiles <- function(data, ev_col_name, ko_col_name, pseudocount = 1, title=NULL, saveas=NULL) {
-  # Function to compute KO, EV log fold change
   if (any(is.na(data[[ev_col_name]])) | any(is.na(data[[ko_col_name]]))) {
     stop("Data contains missing values in critical columns. Please handle them before proceeding.")
   }
@@ -205,10 +198,8 @@ generate_pausing_ratio_across_tertiles <- function(data, ev_col_name, ko_col_nam
   return(list(Low = data$TranscriptID[data$Tertile == "Low"],
               Medium = data$TranscriptID[data$Tertile == "Medium"],
               High = data$TranscriptID[data$Tertile == "High"]))
-} # semi-complete
+} 
 
-
-library(dplyr)
 
 add_genomic_coordinates <- function(df, genes, all_regions) {
   # Initialize connection to Ensembl

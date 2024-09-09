@@ -8,6 +8,7 @@
 # Date: [YYYY-MM-DD]
 # Purpose: This script computes GRO-seq Pausing indices (PI) and promoter release ratios (PRR) 
 # for gene expression analysis using GRO-seq data.
+# R.version: 4.3.1
 
 # Libraries 
 library(rtracklayer)
