@@ -1,3 +1,5 @@
+#!/usr/bin/env Rscript
+
 # Title: PRR Analysis for GRO-seq Data
 # Author(s): 
 # Associated Manuscript: [Title of Manuscript]
@@ -24,7 +26,7 @@ library(dplyr)
 library(writexl)
 
 # Helper functions in groseq_helpers.R
-source("helpers/groseq_helpers.R")
+source("groseq_helpers.R")
 
 # GRO-seq Coverage 
 ev_bw_path <- "gro-ev.p.igdup.bw"
@@ -150,3 +152,47 @@ cat("Moderately elongated genes =", moderately_elongated_genes, "\n")
 cat("Not actively elongated genes =", not_actively_elongated_genes, "\n")
 
 
+# Emperical Cumulative Distribution Plots (ECDF)
+median_log2_prr <- 1.5
+groupI <- pausing_data_median[pausing_data_median$log2FC_PRR > median_log2_prr, ]
+groupII <- pausing_data_median[pausing_data_median$log2FC_PRR <= median_log2_prr & pausing_data_median$log2FC_PRR >= -median_log2_prr, ]
+
+pdf("ev_ko_groupI_ecdf_log2FC1.5.pdf", width = 15, height = 10)
+ggplot(groupI) + 
+    theme_bw() +
+    stat_ecdf(aes(log2(1/PRR_EV), color = "PRR_EV"), geom="step", lwd=1.0) + 
+    stat_ecdf(aes(log2(1/PRR_KO), color = "PRR_KO"), geom="step", lwd=1.0) + 
+    scale_color_manual(values = c("PRR_EV" = "red", "PRR_KO" = "black"), name = "Condition",
+                              labels = c("PRR_EV" = "Control (EV)", "PRR_KO" = "Knockout (KO)"))+
+    labs(title = "Group I PRR ECDF KO & EV",
+       x = "log2(PRR)",
+       y = "Cummulative Proportion") +
+    theme(legend.position = "right",
+        axis.text.x  = element_text(size = 16, color = "black"),   
+        axis.text.y = element_text(size = 16, color = "black"),    
+        axis.title.x  = element_text(size = 16, color = "black"), 
+        axis.title.y = element_text(size = 16, color = "black"))
+dev.off()
+
+pdf("ev_ko_groupII_ecdf_log2FC1.5.pdf", width = 15, height = 10)
+ggplot(groupII) + 
+    theme_bw() +
+    stat_ecdf(aes(log2(1/PRR_EV), color = "PRR_EV"), geom="step", lwd=1.0) + 
+    stat_ecdf(aes(log2(1/PRR_KO), color = "PRR_KO"), geom="step", lwd=1.0) + 
+    scale_color_manual(values = c("PRR_EV" = "red", "PRR_KO" = "black"), name = "Condition",
+                              labels = c("PRR_EV" = "Control (EV)", "PRR_KO" = "Knockout (KO)"))+
+    labs(title = "Group II PRR ECDF KO & EV",
+       x = "log2(PRR)",
+       y = "Cummulative Proportion") +
+    theme(legend.position = "right",
+        axis.text.x  = element_text(size = 16, color = "black"),   
+        axis.text.y = element_text(size = 16, color = "black"),    
+        axis.title.x  = element_text(size = 16, color = "black"), 
+        axis.title.y = element_text(size = 16, color = "black"))
+dev.off()
+
+
+# Summary Data Tables 
+writexl::write_xlsx(pausing_data_median, "pausing_data_summary.xlsx")
+writexl::write_xlsx(groupI, "groupI_genes_summary.xlsx")
+writexl::write_xlsx(groupII, "groupII_genes_summary.xlsx")
