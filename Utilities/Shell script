@@ -1,0 +1,4 @@
+## Shell Scripts for various purposes
+
+## Find files with certain strings/extension in all subdirectory then copy them to another directory
+find /target/directory/ -name 'certain_name.ext' -exec cp {} /destination/directory/
