@@ -1,0 +1,147 @@
+---
+title:    "JMP PAC Create Files "
+author:   "Kasonde Chewe"
+file:     "01.jmppac_manifest_report.Rmd"
+date:     "`r format(Sys.Date(), '%B %d, %Y')`"
+output:   html_notebook
+---
+
+Script creates summary report for each column in WES and WTS manfiest 
+See utilties/jmppac_manifest_WES.R and *_WTS.R script for table generating code
+
+
+
+```{r WES MANIFEST}
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggprism)
+
+setwd("/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC")
+WES_manifest <- readxl::read_excel("/oceanus/collab/InternalJeff/users/kxc732/Projects/../../hxd052/data/JMP_PAC/datasets/manifests/WES_manifest.xlsx")
+
+
+
+
+# Assuming your dataframe is named WES_manifest
+# Keep only unique CARIS_ID entries
+WES_manifest_unique <- WES_manifest %>%
+  distinct(CARIS_ID, .keep_all = TRUE)
+
+# Generate summary of the data
+WES_summary <- WES_manifest_unique %>%
+  summarise(
+    total_samples = n(),
+    bam_files = sum(!is.na(WES_DNA_BAM)),
+    fastq_r1_files = sum(!is.na(WES_DNA_FASTQ_R1)),
+    fastq_r2_files = sum(!is.na(WES_DNA_FASTQ_R2)),
+    vcf_files = sum(!is.na(WES_DNA_VCF)),
+    pdf_reports = sum(!is.na(WES_REPORT_PDF)),
+    xml_reports = sum(!is.na(WES_REPORT_XML)),
+    json_reports = sum(!is.na(WES_REPORT_JSON))
+  )
+
+# Print the summary report
+print(WES_summary)
+
+# Prepare the data for plotting
+WES_summary_long <- WES_summary %>%
+  pivot_longer(cols = -total_samples, names_to = "file_type", values_to = "count")
+
+# Create a barplot to show the stats
+ggplot(WES_summary_long, aes(x = file_type, y = count, fill = file_type)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = count), vjust = -0.5, size = 5) +  # Annotate the counts
+  labs(title = "File Counts by Type in WES Manifest",
+       x = "File Type",
+       y = "Count of Files") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+
+# Identify missing files for each CARIS_ID and JMP_PAC_ID
+missing_files_report <- WES_manifest_unique %>%
+  mutate(
+    missing_bam = ifelse(is.na(WES_DNA_BAM), "missing BAM", NA),
+    missing_fastq_r1 = ifelse(is.na(WES_DNA_FASTQ_R1), "missing FASTQ R1", NA),
+    missing_fastq_r2 = ifelse(is.na(WES_DNA_FASTQ_R2), "missing FASTQ R2", NA),
+    missing_vcf = ifelse(is.na(WES_DNA_VCF), "missing VCF", NA),
+    missing_pdf = ifelse(is.na(WES_REPORT_PDF), "missing PDF Report", NA),
+    missing_xml = ifelse(is.na(WES_REPORT_XML), "missing XML Report", NA),
+    missing_json = ifelse(is.na(WES_REPORT_JSON), "missing JSON Report", NA)
+  ) %>%
+  pivot_longer(cols = starts_with("missing"), names_to = "file_type", values_to = "status") %>%
+  filter(!is.na(status)) %>%
+  select(JMPPAC_ID, CARIS_ID, status)
+
+# Print the missing files report
+print("Missing Files Report:")
+print(missing_files_report)
+
+
+
+
+
+```
+
+
+```{r WTS MANIFEST}
+setwd("/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC")
+WES_manifest <- readxl::read_excel("/oceanus/collab/InternalJeff/users/kxc732/Projects/../../hxd052/data/JMP_PAC/datasets/manifests/WTS_manifest.xlsx")
+
+# Assuming your dataframe is named WTS_manifest
+# Keep only unique CARIS_ID entries
+WTS_manifest_unique <- WTS_manifest %>%
+  distinct(CARIS_ID, .keep_all = TRUE)
+
+# Generate summary of the data
+WTS_summary <- WTS_manifest_unique %>%
+  summarise(
+    total_samples = n(),
+    bam_files = sum(!is.na(WTS_RNA_BAM)),
+    fastq_r1_files = sum(!is.na(WTS_RNA_FASTQ_R1)),
+    fastq_r2_files = sum(!is.na(WTS_RNA_FASTQ_R2)),
+    tsv_files = sum(!is.na(WTS_RNA_TSV)),
+    xml_reports = sum(!is.na(WTS_REPORT_XML))
+  )
+
+# Print the summary report
+print(WTS_summary)
+
+# Prepare the data for plotting
+WTS_summary_long <- WTS_summary %>%
+  pivot_longer(cols = -total_samples, names_to = "file_type", values_to = "count")
+
+# Create a barplot to show the stats
+ggplot(WTS_summary_long, aes(x = file_type, y = count, fill = file_type)) +
+  geom_bar(stat = "identity", width = 0.7) +
+  geom_text(aes(label = count), vjust = -0.5, size = 5) +  # Annotate the counts
+  labs(title = "File Counts by Type in WTS (RNA) Manifest",
+       x = "File Type",
+       y = "Count of Files") +
+  theme_minimal() +
+  theme(axis.text.x = element_text(angle = 45, hjust = 1))
+
+# Identify missing files for each CARIS_ID and JMP_PAC_ID
+missing_files_report_wts <- WTS_manifest_unique %>%
+  mutate(
+    missing_bam = ifelse(is.na(WTS_RNA_BAM), "missing BAM", NA),
+    missing_fastq_r1 = ifelse(is.na(WTS_RNA_FASTQ_R1), "missing FASTQ R1", NA),
+    missing_fastq_r2 = ifelse(is.na(WTS_RNA_FASTQ_R2), "missing FASTQ R2", NA),
+    missing_tsv = ifelse(is.na(WTS_RNA_TSV), "missing TSV", NA),
+    missing_xml = ifelse(is.na(WTS_REPORT_XML), "missing XML Report", NA)
+  ) %>%
+  pivot_longer(cols = starts_with("missing"), names_to = "file_type", values_to = "status") %>%
+  filter(!is.na(status)) %>%
+  select(JMPPAC_ID, CARIS_ID, status)
+
+# Print the missing files report
+print("Missing Files Report for WTS (RNA):")
+print(missing_files_report_wts)
+
+
+
+
+```
+
