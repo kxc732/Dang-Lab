@@ -1,1 +1,2 @@
 # Dang Lab
+The Dang Lab studies the role of RNA binding proteins in primary liver cancer. Our goal is to identify unique drivers of liver cancer to develop novel biomarkers or therapies to improve patient outcome. The lab has several areas of expertise, including RNA biology, translational, bioinformatics, and molecular biology to identify key oncogenic RBPs involved in transcriptomic alterations associated with disease states.
