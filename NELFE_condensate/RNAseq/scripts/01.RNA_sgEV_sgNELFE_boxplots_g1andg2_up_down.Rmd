@@ -36,13 +36,13 @@ library(ggpubr)
 
 
 ```{r LOAD CSV FILES AND GROUPS,  include=TRUE, echo=FALSE, message=FALSE}
-dataset_dir <- "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets"
-peaks_dir <- "~/Projects/Condensate_Paper/01_GROSEQ_FINAL/peaks"
+dataset_dir <- "../2datasheets/datasets"
+#peaks_dir <- "~/Projects/Condensate_Paper/01_GROSEQ_FINAL/peaks"
 
 # read in datasets
 rna_counts <- read.csv(paste0(dataset_dir,"/countsMatrix_RNA-sgEV-sgKO_with_genes.csv"))
-groupI <- read.delim(paste0(peaks_dir,"/groupI_genes.bed"), header = FALSE)
-groupII <- read.delim(paste0(peaks_dir,"/groupII_genes.bed"),  header = FALSE)
+groupI <- read.delim(paste0(dataset_dir,"/groupI_genes.bed"), header = FALSE)
+groupII <- read.delim(paste0(dataset_dir,"/groupII_genes.bed"),  header = FALSE)
 
 ```
 
