@@ -1,0 +1,1467 @@
+---
+title: "JMP PAC Project WTS Data Quality Control"
+author: "Kasonde Chewe"
+date: "`r format(Sys.time(), '%d %B, %Y')`"
+output:
+  pdf_document: default
+  html_notebook: default
+file: Batch_Effect_Analysis.report.Rmd
+---
+
+## Comprehensive Batch Effect Analysis Technical Report
+
+October 2024 dataset includes 120 WTS JMP PAC patients. Analysis is run using R 4.3.1 (see sessioninfo below for all software used).
+
+Additional re-useable utilities are in located in XXX (see references)
+
+## Pipeline Summary
+
+Batch effect correction is applied herein to correct for technical biases. From raw (FASTQ) sequencing data, the script ***extract_fastq_metadata.sh*** [1] is used to extract the following sequencing variables.
+
+The most likely sequencing platform for WTS data generation the ***Illumina Nova Seq 6000*** [3,4]. Based on the format of the FASTQ header identifier @A01687, which specifies the instrument ID
+
+@A01687:92:H57MMDRX3:1:1101:7220:1000 **1:N:0:AAGACGGA+CAATCTGA**
+
+| Field         | Description                                                                                                                                                                             |
+|-------------------------|-----------------------------------------------|
+| Instrument    | The unique identifier for the sequencing machine used to generate the data (e.g., A00747 refers to a specific Illumina NovaSeq 6000 system)                                             |
+| RunID         | The unique identifier for a sequencing run, which helps to track the specific run on the instrument. This number increments with each new run performed on the instrument​               |
+| FlowcellID    | The identifier for the flowcell used in the run. A flowcell is a disposable cartridge containing channels where DNA fragments are sequenced                                             |
+| Lane          | Specifies the lane on the flowcell where the sequencing took place. Illumina flowcells can contain multiple lanes, each handling different samples or libraries                         |
+| Tile          | Refers to a subsection of a lane. Each lane is divided into multiple tiles, and sequencing reads are processed from individual tiles                                                    |
+| X_Coordinate  | These coordinates specify the exact position within a tile where the sequence cluster was detected. It helps to locate the physical cluster in the sequencing image​                     |
+| Pair_Info     | Indicates whether the read is part of a paired-end sequencing run. In paired-end sequencing, two reads are sequenced from opposite ends of a fragment                                   |
+| Filter        | A flag indicating whether a read passed the Illumina quality filter (Y = passed filter, N = failed filter). Only high-quality reads pass the filter and are used in downstream analyses​ |
+| ControlNumber | Typically a number indicating whether the read is part of a control experiment included in the sequencing run​                                                                           |
+| IndexSequence | The sequence of the indexing barcode used to distinguish between samples in multiplex sequencing runs. Indexes are unique sequences assigned to each sample to allow their separation   |
+| Date          | Date of sequencing is taken                                                                                                                                                             |
+
+### 
+
+### References
+
+1.  Location of extract_fastq_metadata "/oceanus/collab/InternalJeff/users/kxc732/Projects/JMP_PAC/01_SCRIPTS_ALL/bin/extract_fastq_metadata2.sh"
+2.  Interpreting PCA results. <https://online.stat.psu.edu/stat505/lesson/11/11.4>
+3.  Steinbaugh <https://steinbaugh.com/posts/illumina-sequencer.html#instrument-codes>
+4.  NovaSeq 600 System Specifications [Nova Seq System Specifications PDF Document](illumina.com/content/dam/illumina/gcs/assembled-assets/marketing-literature/novaseq-6000-spec-sheet-m-gl-00271/novaseq-6000-spec-sheet-m-gl-00271.pdf)
+
+### To Do List
+
+1.  include all technical issues (incorporated), ~~date~~, sequencing depth etc (re-run time consuming)
+2.  add % PC to each axis
+3.  do not apply quantile normalization
+
+Raw gene counts matrix is generated using
+
+```{r CLEAR ENV,include=FALSE}
+rm(list=ls())
+
+```
+
+```{r}
+# Custom Functions (Helpers to be moved)
+plot_expression <- function(counts_matrix, n=10, title="Expression Boxplots for Each Sample")
+{
+  counts_df <- as.data.frame(log2(counts_matrix[1:n, 1:n]))
+  long_data <- melt(counts_df)
+
+  colnames(long_data) <- c("Sample", "Expression")
+
+  p <- ggplot(long_data, aes(x = Sample, y = Expression, color = Sample)) + 
+    geom_boxplot() +
+    theme_prism() +
+    labs(title = title, x = "Samples", y = "Expression")
+  print(p)
+
+}
+
+compute_moments <- function(data, group_name=NULL) {
+  # Function to compute statistical moments
+  cat('Statistical Moments for', group_name, ':\n')
+  cat('Mean:', mean(data), '\n')
+  cat('Variance:', var(data), '\n')
+  cat('Skewness:', skewness(data), '\n')
+  cat('Kurtosis:', kurtosis(data), '\n\n')
+}
+
+
+calculate_cv <- function(expression_matrix) {
+  # Function to calculate the Coefficient of Variation (CV) for each gene
+  apply(expression_matrix, 1, function(x) {
+    mean_expression <- mean(x, na.rm = TRUE)
+    sd_expression <- sd(x, na.rm = TRUE)
+    
+    if (mean_expression == 0) {
+      return(NA)
+    } else {
+      return(sd_expression / mean_expression)
+    }
+  })
+}
+
+compute_f_test <- function(cv1, cv2) {
+  # Function to compute the F-test for each gene
+  var1 <- var(cv1)
+  var2 <- var(cv2)
+  
+  # Perform the F-test
+  f_statistic <- var1 / var2
+  df1 <- length(cv1) - 1
+  df2 <- length(cv2) - 1
+  
+  p_value <- pf(f_statistic, df1, df2, lower.tail = FALSE)
+  return(p_value)
+}
+
+compute_wilcox_p_values <- function(masld_expression, nonmasld_expression) {
+  # Function to compute p-values using the Mann-Whitney U test
+  p_values <- numeric(nrow(masld_expression))
+  
+
+  for (i in 1:nrow(masld_expression)) {
+    wilcox_test_result <- wilcox.test(masld_expression[i,], nonmasld_expression[i,])
+    p_values[i] <- wilcox_test_result$p.value
+  }
+  return(p_values)
+}
+
+
+library(sn)
+library(ggplot2)
+library(preprocessCore)
+
+process_and_plot_distributions <- function(matrix1, matrix2, 
+                                           apply_zscore = TRUE, 
+                                           apply_quantile_norm = TRUE, 
+                                           num_genes = 10000) {
+  # 1. Combine both matrices into a single matrix for processing
+  combined_matrix <- cbind(matrix1, matrix2)
+  
+  # # 2. Calculate row-wise variance for gene selection
+  # gene_variance <- apply(combined_matrix, 1, var)
+  # 
+  # num_genes <- dim(combined_matrix)[1]
+  # # 3. Select the top num_genes most variable genes
+  # ranked_genes <- order(gene_variance, decreasing = TRUE)[1:num_genes]
+  # combined_matrix <- combined_matrix[ranked_genes, ]
+  
+  # 4. Apply quantile normalization if specified
+  if (apply_quantile_norm) {
+    combined_matrix <- normalizeBetweenArrays(combined_matrix, method = "quantile")
+  }
+  
+  # 5. Apply Z-score normalization if specified
+  if (apply_zscore) {
+    matrix1_z <- scale(combined_matrix[, 1], center = TRUE, scale = TRUE)
+    matrix2_z <- scale(combined_matrix[, 2], center = TRUE, scale = TRUE)
+  } else {
+    matrix1_z <- combined_matrix[, 1]
+    matrix2_z <- combined_matrix[, 2]
+  }
+  
+  # 6. Prepare data for plotting
+  data_df <- data.frame(
+    Value = c(matrix1_z, matrix2_z),
+    Distribution = factor(c(rep("MASLD", length(matrix1_z)), 
+                            rep("nonMASLD", length(matrix2_z))))
+  )
+  
+  # 7. Plotting the Densities
+  ggplot(data_df, aes(x = Value, color = Distribution, fill = Distribution)) +
+    geom_density(alpha = 0.3) +
+    labs(title = paste("Density Plot of the Distributions of MASLD vs nonMASLD patients (Top", num_genes, "Variable Genes)"), 
+         x = "Value", y = "Density") +
+    theme_minimal() +
+    scale_fill_manual(values = c("MASLD" = "blue", 
+                                 "nonMASLD" = "red")) +
+    scale_color_manual(values = c("MASLD" = "blue", 
+                                  "nonMASLD" = "red"))
+}
+
+
+```
+
+```{r LOAD RAW COUNTS, include=FALSE}
+# load libraries 
+library(DESeq2)
+library(dplyr)
+library(readxl)
+library(ggplot2)
+library(ggprism)
+
+
+# read in JMP_PAC masterlist 
+mst_list <- readxl::read_xlsx("/oceanus/collab/InternalJeff/users/kxc732/../hxd052/data/JMP_PAC/datasets/excels/JMP_PaC-MasterList 2024.xlsx") # MASTERLIST
+datasheet <- "/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC/datasets/final/jmp_pac120_masld_status.txt"
+TPM_exp <- "~/Projects/JMP_PAC/datasets/RDS/wts_120_TPM_norm.Rds"
+
+jmp_risk_factors <- read.delim(datasheet, sep = "\t", header = TRUE)
+counts_matrix <- as.data.frame(readxl::read_xlsx("/oceanus/collab/InternalJeff/users/kxc732/../hxd052/data/JMP_PAC/datasets/excels/transcriptomic matrix/raw_geneset/raw_wts_n120_oct2024_jmppac_id_full.xlsx")) #raw counts
+
+# set the rownames to Gene Symbols
+rownames(counts_matrix) <- counts_matrix$Gene
+counts_matrix$Gene <- NULL
+
+# rename mst_list columns for consistency 
+mst_list <- mst_list %>%
+  rename(
+    "Res_CARIS ID"= "Primary_CARIS ID"
+  )
+
+# Rename all columns in jmp_risk_factors synatrx rename (TO FROM )
+jmp_risk_factors <- jmp_risk_factors %>%
+  rename(
+    "JMP_PAC_ID" = "JMP_PAC.ID",
+    "RES_CARIS_ID" = "Res_CARIS.ID",
+    "NAFLD_NASH" = "NASH.NAFLD.Status..Y.N.",
+    "HYPERTENSION_STATUS" = "Hypertension..Y.N.",
+    "HYPERLIPIDEMIA_STATUS" = "Hyperlipidemia.Status..Y.N.",
+    "BMI_VALUE" = "BMI..kg.m2..before.DOS",
+    "DIABETES_TYPE" = "DIABETES.TYPE..Pre.op.",
+    "DIABETES_MELLITUS" = "DM",
+    "OBESITY_STATUS_GT_25" = "Obese25",
+    "MASLD_STATUS" = "MASLD"
+  ) %>%
+  mutate(across(where(is.character), trimws))
+
+
+
+```
+
+```{r TABLE 1: SUMMARY OF JMP PAC METRICS, include=TRUE}
+library(knitr)
+library(kableExtra)
+
+head(jmp_risk_factors[0:nrow(jmp_risk_factors), 1:ncol(jmp_risk_factors)]) %>%
+  kable() %>%
+    kable_classic_2(full_width = TRUE, font_size =10) %>% 
+    row_spec(0:0, font_size = 8)
+
+```
+
+```{r FASTQ metadata, include=FALSE}
+# Get FASTQ file information 
+fastq_metadata <- read.csv("/oceanus/collab/InternalJeff/users/kxc732/Projects/JMP_PAC/quality_control/fastq_headers.csv",header = TRUE)
+head(fastq_metadata)
+dim(fastq_metadata)
+
+# Count the number of samples per instrument
+fastq_metadata %>%
+  group_by(Instrument) %>%
+  summarize(Sample_Count = n())
+
+fastq_metadata %>%
+  group_by(FlowcellID ) %>%
+  summarize(Flow_cell_count = n())
+
+# Find unique FlowcellID per Instrument
+fastq_metadata %>%
+  group_by(Instrument) %>%
+  summarize(Unique_FlowcellID = n_distinct(FlowcellID))
+
+# Summarize multiple columns (average, count, etc.)
+summary_table <- fastq_metadata %>%
+  group_by(Instrument) %>%
+  summarize(
+    Num_Samples = n(),
+    Unique_Flowcells = n_distinct(FlowcellID),
+    Unique_Lanes = n_distinct(Lane),
+    Unique_Tiles = n_distinct(Tile)
+  )
+# note useful will be removed from report
+# # Summarize by Instrument and calculate the mean of X and Y coordinates
+# fastq_metadata %>%
+#   group_by(Instrument) %>%
+#   summarize(Avg_X_Coordinate = mean(X_Coordinate),
+#             Avg_Y_Coordinate = mean(Y_Coordinate))
+
+
+```
+
+#### 2. Summary of FASTQ Platform Information (NEXT Seq 600 System) Section summarizes potential technical confounders including, the number of unique flow cells (FlowcellID) used for each Instrument. It helps identify potential technical differences based on flow cell usage.
+
+```{r}
+
+summary_table %>%
+      kable(caption = "Table 2: Summary of FASTQ Platform Information (Possible Technical Confounders)") %>%
+        kable_classic_2(full_width = TRUE, font_size =15) %>% 
+        row_spec(0:0, font_size = 15)
+
+```
+
+```{r FASTQ PLATFORM PLOTS, include=FALSE}
+library(ggplot2)
+library(ggprism)
+
+# 1. Bar plot for samples per instrument
+barplot_instrument <- ggplot(fastq_metadata, aes(x = Instrument, fill = Instrument)) +
+  geom_bar() +
+  theme_prism() +
+  labs(title = "Number of Samples per Instrument", 
+       x = "Instrument", y = "Sample Count") +
+  theme(axis.text.x = element_text(angle = 60, 
+                                   vjust = 0.5, 
+                                   hjust = 1))
+# Save the plot
+ggsave("~/Projects/JMP_PAC/quality_control/plots/batch_effect_samples_per_instrument.pdf",
+       plot = barplot_instrument, dpi = 600, height = 8, width = 12)
+
+
+# 2. Pie chart of instrument distribution
+instrument_distribution <- fastq_metadata %>%
+  group_by(Instrument) %>%
+  summarize(Num_Samples = n())
+
+pie_instrument <- ggplot(instrument_distribution, aes(x = "", y = Num_Samples, fill = Instrument)) +
+  geom_bar(stat = "identity", width = 1) +
+  coord_polar(theta = "y") +
+  labs(title = "Instrument Distribution (Potential Technical Bias)") +
+  theme_prism()
+
+# Save the pie chart
+ggsave("~/Projects/JMP_PAC/quality_control/plots/instrument_distribution_pie.pdf",
+       plot = pie_instrument, dpi = 600, height = 8, width = 8)
+
+
+# 3. Bar plot for flowcell distribution
+flowcell_distribution <- fastq_metadata %>%
+  group_by(Instrument, FlowcellID) %>%
+  summarize(Num_Samples = n())
+
+barplot_flowcell <- ggplot(flowcell_distribution, aes(x = Instrument, y = Num_Samples, fill = FlowcellID)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Flowcell Distribution by Instrument", x = "Instrument", y = "Number of Samples") +
+  theme_prism()
+
+# Save the flowcell distribution barplot
+ggsave("~/Projects/JMP_PAC/quality_control/plots/flowcell_distribution.pdf",
+       plot = barplot_flowcell, dpi = 600, height = 8, width = 16)
+
+
+# 4. Histogram for tile counts
+hist_tile <- ggplot(fastq_metadata, aes(x = Tile)) +
+  geom_histogram(binwidth = 50, fill = "steelblue", color = "black") +
+  facet_wrap(~Instrument) +
+  labs(title = "Tile Distribution Across Instruments", x = "Tile", y = "Count") +
+  theme_prism()
+
+# Save the tile histogram
+ggsave("~/Projects/JMP_PAC/quality_control/plots/tile_distribution.pdf",
+       plot = hist_tile, dpi = 600, height = 8, width = 12)
+
+
+# 5. Bar plot for lane counts
+lane_distribution <- fastq_metadata %>%
+  group_by(Instrument, Lane) %>%
+  summarize(Num_Samples = n())
+
+barplot_lane <- ggplot(lane_distribution, aes(x = Lane, y = Num_Samples, fill = Instrument)) +
+  geom_bar(stat = "identity") +
+  labs(title = "Lane Distribution by Instrument", x = "Lane", y = "Number of Samples") +
+  theme_prism()
+
+# Save the lane distribution barplot
+ggsave("~/Projects/JMP_PAC/quality_control/plots/lane_distribution.pdf",
+       plot = barplot_lane, dpi = 600, height = 8, width = 12)
+
+
+```
+
+#### 3. Summary Plots
+
+The summary plots below have been saved in XXX as pdfs for later usage, review or presentation.
+
+```{r, fig.height=12, fig.width=15}
+# show plots 
+print(barplot_instrument)
+print(pie_instrument)
+print(barplot_flowcell)
+print(hist_tile)
+print(barplot_lane)
+
+```
+
+### 4. Batch Effect Correction
+
+Likely factors causing batch effect in downstream analysis include
+
+-   Instrument variability
+
+-   Date of sequencing
+
+-   Flow cell and lane effects
+
+-   Sample preparation protocols
+
+-   Sequencing depth and coverage
+
+-   Indexing and multiplexing
+
+-   Read length and quality and data processing (downstream)
+
+-   Environmental factor
+
+-   Technician/ operator effects
+
+A detailed breakdown of the steps, statistical and math proofs can be found in appendix B. The following section covers batch effect correction in detail. Batch effect correction can be handled with the software packages below.\
+
+| **Package**      | Description                                                                                                                             |
+|-----------------------------|-------------------------------------------|
+| **limma**        | Applies linear modeling to remove batch effects without affecting the biological signal                                                 |
+| **ComBat (sva)** | Uses an empirical Bayes framework to adjust for batch effects                                                                           |
+| **DESeq2**       | `vst()` function is often used in this context to stabilize variance before correcting for batch effects with other methods like ComBat |
+| **edgeR**        | **C**an be used with the **RUVSeq** package to remove unwanted variation (RUV) in RNA-seq data, including batch effects                 |
+| **bapred**       | **bapred** package (Batch Prediction) uses machine learning methods to model and correct for batch effects.                             |
+| **Harmony**      | Fast and scalable package for batch effect correction, particularly for single-cell RNA-seq data.                                       |
+
+A simplified model for batch correction is given below
+
+$$
+Y_{ij} = \mu + \beta{i} + \gamma_{j} + \epsilon{ij}
+$$
+
+Where
+
+-   $Y_{ij}$ is the observed gene expression value
+
+-   $\mu$ is the overall mean expression
+
+-   $\beta_{i}$​ is the biological effect (difference between Group A and Group B)
+
+-   $\gamma_j$ is the batch effect (difference between Batch 1 and Batch 2)
+
+-   $\epsilon_{ij}$​ is random noise
+
+-   
+
+```{r EXTRACT COLDATA, include=FALSE}
+library(dplyr)
+library(edgeR)
+library(limma)
+library(ggplot2)
+
+match_id <- mst_list %>%
+  select(`JMP_PAC ID`, `Res_CARIS ID`)
+
+
+fastq_metadata <- read.csv("/oceanus/collab/InternalJeff/users/kxc732/Projects/JMP_PAC/quality_control/fastq_headers.csv", header = TRUE)
+p_list <- colnames(counts_matrix) # contains 120 samples formatted as JMP_PacXXX
+
+fastq_metadata$CARIS_ID <- trimws(toupper(fastq_metadata$CARIS_ID))
+match_id$`Res_CARIS ID` <- trimws(toupper(match_id$`Res_CARIS ID`))
+match_id$`JMP_PAC ID` <- trimws(toupper(match_id$`JMP_PAC ID`))
+p_list_upper <- trimws(toupper(p_list))
+
+merged_data <- merge(
+  fastq_metadata,
+  match_id,
+  by.x = "CARIS_ID",
+  by.y = "Res_CARIS ID",
+  all = TRUE
+)
+
+colData <- merged_data %>%
+  filter(`JMP_PAC ID` %in% p_list_upper) %>%
+  group_by(`JMP_PAC ID`) %>%
+  summarize(
+    Instrument = dplyr::first(Instrument),
+    Flowcell = dplyr::first(FlowcellID),
+    Date = dplyr::first(Modification_Date),
+    .groups = 'drop'
+  )
+
+colData <- as.data.frame(colData)
+rownames(colData) <- colData$`JMP_PAC ID`
+
+colData$Instrument[is.na(colData$Instrument)] <- "Unknown"
+colData$Flowcell[is.na(colData$Flowcell)] <- "Unknown"
+colData$Date[is.na(colData$Date)] <- "Unknown"
+
+colData$Instrument <- as.factor(colData$Instrument)
+colnames(counts_matrix) <- trimws(toupper(colnames(counts_matrix)))
+colData <- colData[match(colnames(counts_matrix), rownames(colData)), ]
+
+# Verify matching
+if (!all(colnames(counts_matrix) == rownames(colData))) {
+  stop("Sample names in counts_matrix and colData do not match.")
+}
+
+```
+
+```{r}
+print(head(colData))
+```
+
+step 1: create a DGEList (input counts matrix with rows as genes and columns as samples). Note that a parameter exists to input sequencing depth as matched vector
+
+step 2: calculate scaling factors to normalize by effective library sizes. Details in appendix B. Method used is TMM
+
+step 3: compute Counts Per Million
+
+$$
+CPM = \frac{Y_{ij}}{L_{i}} \times 10^{6}
+$$
+
+The **counts per million (CPM)** formula is used to normalize raw read counts in RNA-seq data to account for differences in sequencing depth across libraries. The formula converts raw counts to a comparable scale by dividing each gene’s count by the total number of counts (library size) and multiplying by one million (to make it per million).
+
+step 4: perform principal component analysis (PCA) using the precomp() function see (appendix B - PCA section)
+
+```{r}
+# Batch Effect Correction by Instrument 
+dge <- DGEList(counts = counts_matrix, remove.zeros = TRUE)
+dge <- calcNormFactors(dge, method = "TMM")
+logCPM <- scale(cpm(dge, log = TRUE), center = TRUE, scale=TRUE) # alternative normalization methods can be applied here
+
+# Perform PCA before batch effect correction
+pca_before <- prcomp(t(logCPM))
+
+# Extract percentage of variance explained by each PC
+pca_variance_before <- summary(pca_before)$importance[2, ] * 100  
+pca_variance_before_pc1 <- round(pca_variance_before[1], 2)
+pca_variance_before_pc2 <- round(pca_variance_before[2], 2)
+
+
+pca_df_before <- data.frame(
+  Sample = colnames(counts_matrix),
+  PC1 = pca_before$x[,1],
+  PC2 = pca_before$x[,2],
+  Instrument = colData$Instrument
+)
+
+# Plot PCA before correction
+ggplot(pca_df_before, aes(x = PC1, y = PC2, color = Instrument)) +
+  geom_point(size = 2) +
+  labs(title = "PCA Before Batch Effect Correction",
+       x = paste0("Principal Component 1 (", pca_variance_before_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_before_pc2, "% Variance)")) +
+  theme_minimal()
+
+# Applying batch effect correction
+logCPM_corrected <- removeBatchEffect(logCPM, batch = colData$Instrument)
+pca_after <- prcomp(t(logCPM_corrected))
+
+
+# Extract percentage of variance explained by each PC
+pca_variance_after <- summary(pca_after)$importance[2, ] * 100  
+pca_variance_after_pc1 <- round(pca_variance_after[1], 2)
+pca_variance_after_pc2 <- round(pca_variance_after[2], 2)
+
+pca_df_after <- data.frame(
+  Sample = colnames(logCPM_corrected),
+  PC1 = pca_after$x[,1],
+  PC2 = pca_after$x[,2],
+  Instrument = colData$Instrument
+)
+
+# Plot PCA after correction
+ggplot(pca_df_after, aes(x = PC1, y = PC2, color = Instrument)) +
+  geom_point(size = 2) +
+  labs(title = "PCA After Batch Effect Correction by Instrument Only",
+       x = paste0("Principal Component 1 (", pca_variance_after_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_after_pc2, "% Variance)")) +
+  theme_minimal()
+
+```
+
+Batch effect by flowcell Only
+
+```{r}
+
+
+# Batch Effect Correction by Flowcell Only 
+dge <- DGEList(counts = counts_matrix, remove.zeros = TRUE)
+dge <- calcNormFactors(dge, method = "TMM")
+logCPM <- scale(cpm(dge, log = TRUE), center = TRUE, scale=TRUE) # alternative normalization methods can be applied here
+
+# Perform PCA before batch effect correction
+pca_before <- prcomp(t(logCPM))
+
+# Extract percentage of variance explained by each PC
+pca_variance_before <- summary(pca_before)$importance[2, ] * 100  
+pca_variance_before_pc1 <- round(pca_variance_before[1], 2)
+pca_variance_before_pc2 <- round(pca_variance_before[2], 2)
+
+
+pca_df_before <- data.frame(
+  Sample = colnames(counts_matrix),
+  PC1 = pca_before$x[,1],
+  PC2 = pca_before$x[,2],
+  Flowcell = colData$Flowcell
+)
+
+# Plot PCA before correction
+ggplot(pca_df_before, aes(x = PC1, y = PC2, color = Flowcell)) +
+  geom_point(size = 2) +
+  labs(title = "PCA Before Batch Effect Correction by Flowcell Only",
+       x = paste0("Principal Component 1 (", pca_variance_before_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_before_pc2, "% Variance)")) +
+  theme_minimal()
+
+# Applying batch effect correction
+logCPM_corrected <- removeBatchEffect(logCPM, batch = colData$Flowcell)
+pca_after <- prcomp(t(logCPM_corrected))
+
+
+# Extract percentage of variance explained by each PC
+pca_variance_after <- summary(pca_after)$importance[2, ] * 100  
+pca_variance_after_pc1 <- round(pca_variance_after[1], 2)
+pca_variance_after_pc2 <- round(pca_variance_after[2], 2)
+
+pca_df_after <- data.frame(
+  Sample = colnames(logCPM_corrected),
+  PC1 = pca_after$x[,1],
+  PC2 = pca_after$x[,2],
+  Flowcell = colData$Flowcell
+)
+
+# Plot PCA after correction
+ggplot(pca_df_after, aes(x = PC1, y = PC2, color = Flowcell)) +
+  geom_point(size = 2) +
+  labs(title = "PCA After Batch Effect Correction by Flowcell Only",
+       x = paste0("Principal Component 1 (", pca_variance_after_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_after_pc2, "% Variance)")) +
+  theme_minimal()
+```
+
+```{r}
+
+# Batch Effect Correction by Flowcell Only 
+dge <- DGEList(counts = counts_matrix, remove.zeros = TRUE)
+dge <- calcNormFactors(dge, method = "TMM")
+logCPM <- cpm(dge, log = TRUE) # alternative normalization methods can be applied here
+
+# Perform PCA before batch effect correction
+pca_before <- prcomp(t(logCPM))
+
+# Extract percentage of variance explained by each PC
+pca_variance_before <- summary(pca_before)$importance[2, ] * 100  
+pca_variance_before_pc1 <- round(pca_variance_before[1], 2)
+pca_variance_before_pc2 <- round(pca_variance_before[2], 2)
+
+
+pca_df_before <- data.frame(
+  Sample = colnames(counts_matrix),
+  PC1 = pca_before$x[,1],
+  PC2 = pca_before$x[,2],
+  Date = colData$Date
+)
+
+# Plot PCA before correction
+ggplot(pca_df_before, aes(x = PC1, y = PC2, color = Date)) +
+  geom_point(size = 2) +
+  labs(title = "PCA Before Batch Effect Correction by Date Only",
+       x = paste0("Principal Component 1 (", pca_variance_before_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_before_pc2, "% Variance)")) +
+  theme_minimal()
+
+# Applying batch effect correction
+logCPM_corrected <- removeBatchEffect(logCPM, batch = colData$Date)
+pca_after <- prcomp(t(logCPM_corrected))
+
+
+# Extract percentage of variance explained by each PC
+pca_variance_after <- summary(pca_after)$importance[2, ] * 100  
+pca_variance_after_pc1 <- round(pca_variance_after[1], 2)
+pca_variance_after_pc2 <- round(pca_variance_after[2], 2)
+
+pca_df_after <- data.frame(
+  Sample = colnames(logCPM_corrected),
+  PC1 = pca_after$x[,1],
+  PC2 = pca_after$x[,2],
+  Date = colData$Date
+)
+
+# Plot PCA after correction
+ggplot(pca_df_after, aes(x = PC1, y = PC2, color = Date)) +
+  geom_point(size = 2) +
+  labs(title = "PCA After Batch Effect Correction by Date Only",
+       x = paste0("Principal Component 1 (", pca_variance_after_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_after_pc2, "% Variance)")) +
+  theme_minimal()
+
+```
+
+From the above analysis it seems that the batch effects are largely due to instrument (as 64.1 % of variance is captured in the PC1) and secondly by date as 53.7% of variance is captured by PC1.
+
+```{r}
+copy <- colData
+```
+
+```{r}
+colData <- copy
+```
+
+Below
+
+```{r}
+
+# Batch Effect Correction by Flowcell Only 
+dge <- DGEList(counts = counts_matrix, remove.zeros = TRUE)
+dge <- calcNormFactors(dge, method = "TMM")
+logCPM <- cpm(dge, log = TRUE) # alternative normalization methods can be applied here
+
+# Perform PCA before batch effect correction
+pca_before <- prcomp(t(logCPM))
+
+# Extract percentage of variance explained by each PC
+pca_variance_before <- summary(pca_before)$importance[2, ] * 100  
+pca_variance_before_pc1 <- round(pca_variance_before[1], 2)
+pca_variance_before_pc2 <- round(pca_variance_before[2], 2)
+
+
+pca_df_before <- data.frame(
+  Sample = colnames(counts_matrix),
+  PC1 = pca_before$x[,1],
+  PC2 = pca_before$x[,2],
+  Instrument = colData$Instrument,
+  Date = colData$Date
+)
+
+# Plot PCA before correction
+ggplot(pca_df_before, aes(x = PC1, y = PC2, shape = Instrument, color = Date)) +
+  geom_point(size = 2) +
+  labs(title = "PCA Before Batch Effect Correction by Date Only",
+       x = paste0("Principal Component 1 (", pca_variance_before_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_before_pc2, "% Variance)")) +
+  theme_minimal()
+
+
+
+colData$Date <- as.Date(colData$Date, format = "%Y-%m-%d")
+min_date <- min(colData$Date, na.rm = TRUE)  # Find the earliest date (ignoring NAs)
+colData$DateNumeric <- as.numeric(colData$Date - min_date)  # Days since the earliest date
+
+median_date <- median(colData$DateNumeric, na.rm = TRUE)
+colData$DateNumeric[is.na(colData$DateNumeric)] <- median_date
+
+
+# 3. Check the class of DateNumeric
+class(colData$DateNumeric)  # Should return "numeric"
+
+# 4. Apply batch effect correction using both Instrument and DateNumeric
+logCPM_corrected <- removeBatchEffect(logCPM, batch = colData$Instrument, covariates = colData$DateNumeric)
+
+# 5. Perform PCA after batch effect correction
+pca_after <- prcomp(t(logCPM_corrected))
+
+# 6. Extract percentage of variance explained by each PC
+pca_variance_after <- summary(pca_after)$importance[2, ] * 100  
+pca_variance_after_pc1 <- round(pca_variance_after[1], 2)
+pca_variance_after_pc2 <- round(pca_variance_after[2], 2)
+
+# 7. Create PCA data frame after correction
+pca_df_after <- data.frame(
+  Sample = colnames(logCPM_corrected),
+  PC1 = pca_after$x[,1],
+  PC2 = pca_after$x[,2],
+  Instrument = colData$Instrument,
+  Date = colData$DateNumeric
+)
+
+# 8. Plot PCA after correction for both Instrument and DateNumeric
+ggplot(pca_df_after, aes(x = PC1, y = PC2, color = Instrument, shape = as.factor(Date))) +
+  geom_point(size = 2) +
+  labs(title = "PCA After Batch Effect Correction (Instrument and Date)",
+       x = paste0("Principal Component 1 (", pca_variance_after_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_after_pc2, "% Variance)")) +
+  theme_minimal()
+
+```
+
+```{r}
+# colData <- copy
+# Batch Effect Correction by Flowcell Only 
+dge <- DGEList(counts = counts_matrix, remove.zeros = TRUE)
+dge <- calcNormFactors(dge, method = "TMM")
+logCPM <- cpm(dge, log = TRUE) # alternative normalization methods can be applied here
+
+# Perform PCA before batch effect correction
+pca_before <- prcomp(t(logCPM))
+
+# Extract percentage of variance explained by each PC
+pca_variance_before <- summary(pca_before)$importance[2, ] * 100  
+pca_variance_before_pc1 <- round(pca_variance_before[1], 2)
+pca_variance_before_pc2 <- round(pca_variance_before[2], 2)
+
+
+pca_df_before <- data.frame(
+  Sample = colnames(counts_matrix),
+  PC1 = pca_before$x[,1],
+  PC2 = pca_before$x[,2],
+  Instrument = colData$Instrument,
+  Date = colData$Date
+)
+
+# Plot PCA before correction
+ggplot(pca_df_before, aes(x = PC1, y = PC2, shape = Instrument, color = Date)) +
+  geom_point(size = 2) +
+  labs(title = "PCA Before Batch Effect Correction by Date Only",
+       x = paste0("Principal Component 1 (", pca_variance_before_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_before_pc2, "% Variance)")) +
+  theme_minimal()
+
+
+
+colData$Date <- as.Date(colData$Date, format = "%Y-%m-%d")
+
+
+
+# 1. Ensure Flowcell is a factor or numeric
+colData$Flowcell <- as.factor(colData$Flowcell)
+
+# 2. Apply batch effect correction using Instrument, DateNumeric, and Flowcell
+logCPM_corrected <- removeBatchEffect(logCPM, batch = colData$Flowcell, covariates = cbind(colData$Date, colData$Instrument))
+
+# 3. Perform PCA after batch effect correction
+pca_after <- prcomp(t(logCPM_corrected))
+
+# 4. Extract percentage of variance explained by each PC
+pca_variance_after <- summary(pca_after)$importance[2, ] * 100  
+pca_variance_after_pc1 <- round(pca_variance_after[1], 2)
+pca_variance_after_pc2 <- round(pca_variance_after[2], 2)
+
+# 5. Create PCA data frame after correction
+pca_df_after <- data.frame(
+  Sample = colnames(logCPM_corrected),
+  PC1 = pca_after$x[,1],
+  PC2 = pca_after$x[,2],
+  Instrument = colData$Instrument,
+  Date = colData$Date,
+  Flowcell = colData$Flowcell
+)
+
+# 6. Plot PCA after correction for Instrument, Date, and Flowcell
+ggplot(pca_df_after, aes(x = PC1, y = PC2, color = Instrument, shape = as.factor(Flowcell))) +
+  geom_point(size = 2) +
+  labs(title = "PCA After Batch Effect Correction (Instrument, Date, and Flowcell)",
+       x = paste0("Principal Component 1 (", pca_variance_after_pc1, "% Variance)"),
+       y = paste0("Principal Component 2 (", pca_variance_after_pc2, "% Variance)")) +
+  theme_minimal()
+
+
+
+  
+
+
+
+```
+
+```{r}
+# plot_expression(counts_matrix,n=20, title = "Raw Counts log2(exp) for 10 JMP PAC Patients")
+plot_expression(counts_matrix, n=25)
+plot_expression(logCPM_corrected, n=25)
+```
+
+```{r}
+library(sva)
+
+# Calculate logCPM
+dge <- DGEList(counts = counts_matrix)
+dge <- calcNormFactors(dge)
+logCPM <- cpm(dge, log = TRUE)
+
+# Batch Effect Correction with ComBat
+batch <- colData$Instrument
+modcombat <- model.matrix(~1, data = colData)
+combat_edata <- ComBat(
+  dat = as.matrix(logCPM),
+  batch = batch,
+  mod = modcombat,
+  par.prior = TRUE,
+  prior.plots = FALSE
+)
+
+# PCA after ComBat correction
+pca_combat <- prcomp(t(combat_edata))
+pca_df_combat <- data.frame(
+  Sample = colnames(combat_edata),
+  PC1 = pca_combat$x[,1],
+  PC2 = pca_combat$x[,2],
+  Instrument = colData$Instrument
+)
+ggplot(pca_df_combat, aes(x = PC1, y = PC2, color = Instrument)) +
+  geom_point(size = 2) +
+  labs(title = "PCA After ComBat Batch Effect Correction") +
+  theme_minimal()
+
+# VST Transformation
+dds <- DESeqDataSetFromMatrix(
+  countData = counts_matrix,
+  colData = colData,
+  design = ~ Instrument
+)
+vst_data <- vst(dds, blind = TRUE)
+vst_mat <- assay(vst_data)
+
+# PCA on VST data
+pca_vst <- prcomp(t(vst_mat))
+pca_df_vst <- data.frame(
+  Sample = colnames(vst_mat),
+  PC1 = pca_vst$x[,1],
+  PC2 = pca_vst$x[,2],
+  Instrument = colData$Instrument
+)
+ggplot(pca_df_vst, aes(x = PC1, y = PC2, color = Instrument)) +
+  geom_point(size = 2) +
+  labs(title = "PCA of VST-transformed Data") +
+  theme_minimal()
+
+# Optional: Batch Effect Correction on VST data
+vst_mat_corrected <- removeBatchEffect(vst_mat, batch = colData$Instrument)
+pca_vst_corrected <- prcomp(t(vst_mat_corrected))
+pca_df_vst_corrected <- data.frame(
+  Sample = colnames(vst_mat_corrected),
+  PC1 = pca_vst_corrected$x[,1],
+  PC2 = pca_vst_corrected$x[,2],
+  Instrument = colData$Instrument
+)
+ggplot(pca_df_vst_corrected, aes(x = PC1, y = PC2, color = Instrument)) +
+  geom_point(size = 2) +
+  labs(title = "PCA After Batch Effect Correction on VST Data") +
+  theme_minimal()
+
+```
+
+```{r}
+
+# Load necessary libraries
+library(dplyr)
+library(edgeR)
+library(limma)
+library(sva)
+library(ggplot2)
+
+# -------------------------------------------
+# Step 1: Data Preparation and Merging
+# -------------------------------------------
+# re-run prior steps 
+
+# -------------------------------------------
+# Step 2: Filtering Lowly Expressed Genes
+# -------------------------------------------
+# Create DGEList object
+dge <- DGEList(counts = counts_matrix)
+
+# Calculate counts per million (CPM)
+cpm_values <- cpm(dge)
+# Keep genes with CPM > 1 in at least 2 samples
+keep_genes <- rowSums(cpm_values > 1) >= 2
+dge_filtered <- dge[keep_genes, , keep.lib.sizes = TRUE]
+dge_filtered <- calcNormFactors(dge_filtered)
+
+# -------------------------------------------
+# Step 3: Model Setup for SVA
+# -------------------------------------------
+mod <- model.matrix(~1, data = colData)
+dge_filtered <- estimateDisp(dge_filtered, mod)
+
+# -------------------------------------------
+# Step 4: Voom Transformation
+# -------------------------------------------
+# Voom transformation with mean-variance trend plot
+v <- voom(dge_filtered, design = mod, plot = TRUE)
+if (sum(is.na(v$E)) > 0) {
+  stop("Expression data contains NA values after voom transformation.")
+}
+
+# -------------------------------------------
+# Step 5: Estimating Surrogate Variables (SVA)
+# -------------------------------------------
+# Estimate the number of surrogate variables
+n.sv <- num.sv(v$E, mod, method = "leek")
+print(paste("Estimated number of surrogate variables:", n.sv))
+svobj <- sva(v$E, mod, n.sv = n.sv, method = "two-step")
+
+
+# -------------------------------------------
+# Step 6: Batch Effect Correction using SVA
+# -------------------------------------------
+mod_sv <- cbind(mod, svobj$sv)
+fit <- lmFit(v, mod_sv)
+fit <- eBayes(fit)
+top_table <- topTable(fit, adjust = "BH", number = Inf)
+
+# -------------------------------------------
+# Step 7: Remove Unwanted Variation for Visualization
+# -------------------------------------------
+cleaned_logCPM <- removeBatchEffect(v$E, covariates = svobj$sv)
+pca_cleaned <- prcomp(t(cleaned_logCPM))
+pca_df_cleaned <- data.frame(
+  Sample = colnames(cleaned_logCPM),
+  PC1 = pca_cleaned$x[,1],
+  PC2 = pca_cleaned$x[,2]
+)
+
+# -------------------------------------------
+# Step 8: Optional - Visualizing Before Correction
+# -------------------------------------------
+logCPM_before <- cpm(dge_filtered, log = TRUE)
+pca_before <- prcomp(t(logCPM_before))
+pca_df_before <- data.frame(
+  Sample = colnames(logCPM_before),
+  PC1 = pca_before$x[,1],
+  PC2 = pca_before$x[,2]
+)
+
+ggplot(pca_df_before, aes(x = PC1, y = PC2)) +
+  geom_point(size = 2) +
+  labs(title = "PCA Before Batch Effect Correction") +
+  theme_minimal()
+
+ggplot(pca_df_cleaned, aes(x = PC1, y = PC2)) +
+  geom_point(size = 2) +
+  labs(title = "PCA After SVA Batch Effect Correction") +
+  theme_minimal()
+
+
+
+top_genes <- topTable(fit, adjust = "BH")
+
+```
+
+## Further Analysis MASLD vs nonMASLD metaplot
+
+```{r}
+library(e1071)
+library(moments)
+library(readxl)
+library(dplyr)
+library(ggplot2)
+library(ggprism)
+library(preprocessCore) 
+library(limma)
+library(edgeR)
+
+
+```
+
+```{r}
+
+
+filtered_df <- jmp_risk_factors %>%
+  dplyr::select(
+    `JMP_PAC_ID`,
+    `RES_CARIS_ID`,
+    `BMI_VALUE`,
+    `DIABETES_MELLITUS`,
+    `NAFLD_NASH`,
+    `HYPERLIPIDEMIA_STATUS`,
+    `HYPERTENSION_STATUS`,
+    `MASLD_STATUS`
+  )
+
+jmp_risk_factors$JMP_PAC_ID <- toupper(jmp_risk_factors$JMP_PAC_ID) 
+filtered_df$JMP_PAC_ID <- toupper(filtered_df$JMP_PAC_ID) 
+# Subdivide MASLD and nonMASLD Patients by ID
+# n = negative for Obesity 
+# p = positive for Obesity 
+
+nObese <- filtered_df %>% 
+  filter(`BMI_VALUE` < 25 )
+nObese_patients <- nObese$`JMP_PAC_ID`
+
+pObese <- filtered_df %>% 
+  filter(`BMI_VALUE` >= 25 )
+pObese_patients <- pObese$`JMP_PAC_ID`
+
+wts_expression <- logCPM_corrected
+wts_expression <- as.matrix(wts_expression) # using batch corrected expression
+
+# Extract Obese and nonObese expression values
+nObese_expression <- as.matrix(wts_expression[, colnames(wts_expression) %in% nObese_patients])
+pObese_expression <- as.matrix(wts_expression[, colnames(wts_expression) %in% pObese_patients])
+
+
+# Compute basic statisitcs 
+cat("All groups: \n", "n =", dim(wts_expression)[2],"\n")
+compute_moments(na.omit(as.vector(wts_expression)))
+
+cat("Obese Patient Moment groups: \n",  "n =", dim(pObese_expression)[2],"\n")
+compute_moments(na.omit(as.vector(pObese_expression)))
+
+cat("non-Obese Patient Moment groups: \n","n =", dim(nObese_expression)[2],"\n")
+compute_moments(na.omit(as.vector(nObese_expression)))
+
+```
+
+```{r}
+# Load necessary packages
+library(tibble)     # For rownames_to_column() and column_to_rownames()
+library(ggplot2)    # For plotting
+library(dplyr)      # For data manipulation
+library(edgeR)      # For normalization and analysis
+
+# Assuming you have already defined 'pObese_expression' and 'nObese_expression'
+
+# Step 1: Combine the datasets by columns (samples)
+common_genes <- intersect(rownames(pObese_expression), rownames(nObese_expression))
+pObese_expression <- pObese_expression[common_genes, ]
+nObese_expression <- nObese_expression[common_genes, ]
+combined_expression <- cbind(pObese_expression, nObese_expression)
+cat("Step 1: Combined expression dimensions (genes x samples):", dim(combined_expression), "\n")
+
+# Step 2: Transpose the matrix to have samples as rows and genes as columns
+pca_matrix <- t(combined_expression)
+cat("Step 2: Transposed matrix dimensions (samples x genes):", dim(pca_matrix), "\n")
+
+# Convert to a numeric matrix (if not already)
+pca_matrix <- as.matrix(pca_matrix)
+
+# Step 3: Handle missing values
+num_NA <- sum(is.na(pca_matrix))
+cat("Step 3: Number of NA values in the data:", num_NA, "\n")
+if (num_NA > 0) {
+    genes_before <- ncol(pca_matrix)
+    pca_matrix <- pca_matrix[, colSums(is.na(pca_matrix)) == 0]
+    genes_after <- ncol(pca_matrix)
+    cat("Removed", genes_before - genes_after, "genes with missing values.\n")
+}
+
+# Remove genes with zero variance
+zero_var_genes <- apply(pca_matrix, 2, var) == 0
+num_zero_var_genes <- sum(zero_var_genes)
+cat("Step 3: Number of genes with zero variance:", num_zero_var_genes, "\n")
+if (num_zero_var_genes > 0) {
+    pca_matrix <- pca_matrix[, !zero_var_genes]
+    cat("Removed genes with zero variance.\n")
+}
+
+# Check the dimensions after cleaning
+cat("Step 3: Dimensions of PCA matrix after cleaning (samples x genes):", dim(pca_matrix), "\n")
+
+# Step 4: Create sample information
+sample_ids <- rownames(pca_matrix)
+num_pObese_samples <- ncol(pObese_expression)
+num_nObese_samples <- ncol(nObese_expression)
+group_labels <- c(rep("Obese", num_pObese_samples), rep("Non-Obese", num_nObese_samples))
+sample_info <- data.frame(
+    sample_id = sample_ids,
+    group = group_labels
+)
+cat("Step 4: Sample info (first 5 rows):\n")
+print(head(sample_info, 5))
+
+# Step 5: Perform PCA
+cat("Step 5: Performing PCA...\n")
+sample_pca <- prcomp(pca_matrix, center = TRUE, scale. = TRUE)
+cat("PCA completed successfully.\n")
+
+# Examine PCA results
+cat("Step 5: PCA summary:\n")
+print(summary(sample_pca))
+
+# Extract percentage of variance explained by each PC
+pca_variance <- summary(sample_pca)$importance[2, ] * 100  # Proportion of variance multiplied by 100 for percentage
+pca_variance_pc1 <- round(pca_variance[1], 2)
+pca_variance_pc2 <- round(pca_variance[2], 2)
+
+# Step 6: Prepare data for visualization
+# Get the PCA scores (principal components)
+pca_scores <- as.data.frame(sample_pca$x)
+pca_scores$sample_id <- rownames(pca_scores)
+
+# Merge PCA scores with sample information
+pca_data <- merge(pca_scores, sample_info, by = "sample_id")
+cat("Step 6: Merged PCA data dimensions (samples x attributes):", dim(pca_data), "\n")
+cat("Step 6: Merged PCA data (first 5 rows):\n")
+print(head(pca_data, 5))
+
+# Convert 'group' to factor
+pca_data$group <- as.factor(pca_data$group)
+
+# Step 7: Visualize the results with % variance in axis labels
+ggplot(pca_data, aes(x = PC1, y = PC2, color = group)) +
+  geom_point(size = 3, alpha = 0.8) +
+  labs(
+    title = "PCA of Obese (71) vs Non-Obese (49) Patients BMI",
+    x = paste0("Principal Component 1 (", pca_variance_pc1, "% Variance)"),
+    y = paste0("Principal Component 2 (", pca_variance_pc2, "% Variance)"),
+    color = "Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  ) +
+  scale_color_manual(values = c("Obese" = "red", "Non-Obese" = "blue"))
+```
+
+```{r}
+# Load necessary packages
+library(Rtsne)
+library(ggplot2)
+library(dplyr)
+
+
+# Step 1: Perform PCA (if not already done)
+cat("Step 1: Performing PCA for t-SNE...\n")
+pca_for_tsne <- prcomp(pca_matrix, center = TRUE, scale. = FALSE)
+
+# Calculate the percentage of variance explained by each PC
+pca_variance <- summary(pca_for_tsne)$importance[2, ] * 100  # Proportion of variance * 100
+pca_variance_pc1 <- round(pca_variance[1], 2)
+pca_variance_pc2 <- round(pca_variance[2], 2)
+
+# Step 2: Select the first 50 principal components for t-SNE
+num_pcs <- 50
+if (ncol(pca_for_tsne$x) < num_pcs) {
+  num_pcs <- ncol(pca_for_tsne$x)
+  warning(paste("Dataset has only", num_pcs, "principal components. Adjusting PCA subset accordingly."))
+}
+pca_subset <- pca_for_tsne$x[, 1:num_pcs]
+cat("Step 2: Selected", num_pcs, "principal components for t-SNE.\n")
+
+# Step 3: Perform t-SNE on the PCA-reduced data
+cat("Step 3: Performing t-SNE...\n")
+tsne_result <- Rtsne(
+  pca_subset,
+  perplexity = 30,    # Adjust based on the number of samples (perplexity < number of samples / 3)
+  verbose = TRUE,
+  max_iter = 500
+)
+cat("Step 3: t-SNE completed successfully.\n")
+
+# Step 4: Prepare data for plotting
+tsne_data <- data.frame(
+  Dim1 = tsne_result$Y[, 1],
+  Dim2 = tsne_result$Y[, 2],
+  group = sample_info$group
+)
+cat("Step 4: Prepared t-SNE data for plotting.\n")
+
+# Step 5: Annotate PCA variance in plot title or subtitle
+# Since t-SNE doesn't have variance explained, we'll include PCA variance information in the plot's subtitle
+pca_info <- paste0("PCA used ", num_pcs, " PCs capturing ",
+                   round(sum(pca_variance[1:num_pcs]), 2), "% of variance.")
+
+# Step 6: Visualize the t-SNE results with PCA variance information
+ggplot(tsne_data, aes(x = Dim1, y = Dim2, color = group)) +
+  geom_point(size = 3, alpha = 0.7) +
+  labs(
+    title = "t-SNE of Obese vs Non-Obese Patients",
+    subtitle = pca_info,
+    x = "t-SNE Dimension 1",
+    y = "t-SNE Dimension 2",
+    color = "Group"
+  ) +
+  theme_minimal() +
+  theme(
+    plot.title = element_text(hjust = 0.5, size = 16, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 12),
+    axis.title = element_text(size = 14),
+    axis.text = element_text(size = 12)
+  ) +
+  scale_color_manual(values = c("Obese" = "red", "Non-Obese" = "blue"))
+
+```
+
+```{r}
+
+summary(pca_matrix)
+plot(pca_matrix)
+summary(pca_for_tsne)
+plot(pca_for_tsne, type = "lines", main = "Scree Plot")
+```
+
+```{r}
+
+
+
+
+```
+
+```{r}
+obese_cv <- calculate_cv(pObese_expression)
+nonobese_cv <- calculate_cv(nObese_expression)
+
+p_values <- compute_wilcox_p_values(pObese_expression, nObese_expression)
+
+
+cv_comparison <- data.frame(
+  Gene = rownames(pObese_expression),
+  OBESE_CV = obese_cv,
+  nonOBESE_CV = nonobese_cv,
+  p.value = p_values
+)
+
+# Display the CV comparison
+head(cv_comparison)
+p_values <- compute_wilcox_p_values(pObese_expression, nObese_expression)
+
+cv_comparison <- na.omit(cv_comparison)
+cv_comparison$cv_diff <- abs(cv_comparison$OBESE_CV - cv_comparison$nonOBESE_CV)
+most_variable_genes <- cv_comparison[order(-cv_comparison$cv_diff), ]
+significant_genes <- most_variable_genes[most_variable_genes$p.value < 1.15, ]
+
+dim(significant_genes)
+head(significant_genes, 10)
+
+
+copy <- cv_comparison
+
+cv_comparison <- data.frame(
+  Gene = rownames(pObese_expression),
+  OBESE_CV = obese_cv,
+  nonOBESE_CV = nonobese_cv
+)
+
+
+
+# Scatter plot of MALSD vs non-MASLD CV
+ggplot(cv_comparison, aes(x = OBESE_CV, y = nonOBESE_CV)) +
+  geom_point(alpha = 0.5) +
+  geom_abline(slope = 1, intercept = 0, linetype = "dashed", color = "red") +
+  theme_minimal() +
+  labs(title = "Comparison of CV between OBESE and non-OBESE",
+       x = "OBESE CV",
+       y = "non-OBESE CV") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+# Convert data to long format for density plot
+cv_comparison_long <- reshape2::melt(cv_comparison, id.vars = "Gene", variable.name = "Group", value.name = "CV")
+
+# Density plot for each group
+ggplot(cv_comparison_long, aes(x = CV, fill = Group)) +
+  geom_density(alpha = 0.5) +
+  theme_minimal() +
+  labs(title = "Density Plot of CV for OBESE and non-OBESE",
+       x = "Coefficient of Variation (CV)",
+       fill = "Group") +
+  theme(plot.title = element_text(hjust = 0.5))
+
+
+# Boxplot of CV in each group
+ggplot(cv_comparison_long, aes(x = Group, y = log2(CV), fill = Group)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Boxplot of CV for OBESE and non-OBESE",
+       x = "Group",
+       y = "Coefficient of Variation (CV)") +
+  theme(plot.title = element_text(hjust = 0.5))
+```
+
+```{r}
+# Extract expression values for the most variable genes
+x <- pObese_expression[rownames(pObese_expression) %in% significant_genes$Gene, ]
+y <- nObese_expression[rownames(nObese_expression) %in% significant_genes$Gene, ]
+obese_values <- as.vector(pObese_expression[rownames(pObese_expression) %in% significant_genes$Gene, ])
+nonobese_values <- as.vector(nObese_expression[rownames(nObese_expression) %in% significant_genes$Gene, ])
+
+# 
+obese_values <- scale(as.vector(pObese_expression))
+nonobese_values <- scale(as.vector(nObese_expression))
+
+obese_values <- log2(obese_values + 1)
+nonobese_values <- log2(nonobese_values + 1)
+
+# Plot the densities
+obese_density <- density(obese_values, na.rm = TRUE)
+nonobese_values <- density(nonobese_values, na.rm = TRUE)
+
+plot(obese_density, col = 'blue', lwd = 2, main = 'Obese Most Variable Genes Density Plot',
+     xlab = 'Transformed Expression', ylim = c(0, max(obese_density$y, nonobese_values$y)))
+lines(nonobese_values, col = 'red', lwd = 2)
+legend('topright', legend = c('OBESE', 'Non-OBESE'), col = c('blue', 'red'), lwd = 2)
+
+process_and_plot_distributions(log2(x+1), log2(y+1))
+```
+
+### Appendix A
+
+In the above analysis definitions are given as
+
+1.  Sequencing Depth
+
+Sequencing depth refers to the average number of times a nucleotide is read during sequencing. It has been calcualted as:
+
+$$
+Average \ Depth = \frac{Total \ bases \ sequenced}{Total \ genome \ size \ (bp)}
+$$
+
+2.  Coverage Percentage
+
+Coverage percentage is compute as the proportion of the target genome that is covered by at least one read:
+
+$$
+Coverage(\%) = \frac{ Number \ of \ covered \ bases}{Total \ genome \ size \ (bp)}
+$$
+
+### Appendix B
+
+### 1. **TMM (Trimmed Mean of M-values)**
+
+The **TMM method** normalizes RNA-seq data to account for compositional differences between libraries. The method works by computing **scaling factors** based on a weighted trimmed mean of M-values (log-fold changes) between pairs of samples or libraries.
+
+#### M-values Calculation
+
+Given two libraries (samples) $A$ and $B$, for each gene $g$, the **M-value** is the log-fold change of counts between libraries $A$ and $B$. Mathematically, the M-value for a gene $g$ is:
+
+$$ M_g = \log_2\left(\frac{y_{gA}}{L_A}\right) - \log_2\left(\frac{y_{gB}}{L_B}\right) = \log_2\left(\frac{y_{gA}/L_A}{y_{gB}/L_B}\right) $$
+
+Where: - $y_{gA}$ and $y_{gB}$ are the raw counts for gene $g$ in libraries $A$ and $B$, respectively. - $L_A$ and $L_B$ are the library sizes (total number of reads) for libraries $A$ and $B$.
+
+#### TMM Normalization Formula
+
+The scaling factor for library $A$ (relative to a reference library) is computed as the weighted trimmed mean of the M-values:
+
+$$ \text{TMM scaling factor for library A} = \frac{1}{\sum_g w_g \cdot M_g} $$
+
+Where: - $w_g$ is the weight for each gene $g$, often based on the inverse variance of the M-values, and computed using the delta method (approximating the variance for log-transformed counts as binomial variables).
+
+The sum runs over genes that pass the trimming step, where outlier genes are removed based on the extreme values of the M-values.
+
+Finally, the effective library size is computed as:
+
+$$ \text{Effective library size for A} = L_A \cdot \text{TMM scaling factor} $$
+
+------------------------------------------------------------------------
+
+### 2. **TMMwsp (TMM with Singleton Pairing)**
+
+The **TMMwsp** method is a variant of TMM that aims to improve normalization when there is a high proportion of zero counts in the dataset. In TMM, genes with zero counts in either library are excluded from the comparison.
+
+#### Key difference in TMMwsp:
+
+In TMMwsp, the non-zero counts of genes with zero in the other library (singleton genes) are used to improve the comparison. These singleton counts are paired with genes in the other library in decreasing order of size, and a modified TMM algorithm is applied to the re-ordered libraries.
+
+------------------------------------------------------------------------
+
+### 3. **RLE (Relative Log Expression)**
+
+The **RLE method** normalizes the data by calculating the ratio of each sample to a "median library" (which is computed from the geometric mean across all samples) and using the median of these ratios as the scaling factor.
+
+#### RLE Scaling Factor Calculation
+
+1.  **Geometric mean**: First, for each gene $g$, the geometric mean of the counts across all libraries is computed:
+
+$$ \text{GM}_g = \left( \prod_{i=1}^{n} y_{gi} \right)^{1/n} $$
+
+Where: - $y_{gi}$ is the raw count for gene $g$ in library $i$. - $n$ is the number of libraries.
+
+2.  **Relative expression**: The ratio of the count for each gene $g$ in library $A$ to the geometric mean for that gene is computed:
+
+$$ \text{Relative expression for gene } g \text{ in library } A = \frac{y_{gA}}{\text{GM}_g} $$
+
+3.  **Median ratio**: The median of these relative expressions across all genes in library $A$ is taken as the **RLE scaling factor** for that library:
+
+$$ \text{RLE scaling factor for library A} = \text{median}_g \left( \frac{y_{gA}}{\text{GM}_g} \right) $$
+
+Finally, the effective library size is computed similarly as:
+
+$$ \text{Effective library size for A} = L_A \cdot \text{RLE scaling factor} $$
+
+------------------------------------------------------------------------
+
+### Summary of Key Concepts:
+
+-   **TMM** computes scaling factors based on a weighted trimmed mean of M-values (log-fold changes) between libraries, which adjust for sequencing depth and composition differences.
+-   **TMMwsp** extends TMM by including singleton genes (genes with zero counts in one library) to improve the robustness of the method, especially in sparse datasets.
+-   **RLE** normalizes based on the relative log expression of each gene compared to a geometric mean across all samples and uses the median of these ratios to compute scaling factors.
+
+```{r}
+
+sessionInfo()
+
+```
