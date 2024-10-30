@@ -1,0 +1,995 @@
+---
+title: "Descriptive Analysis on Geneomic Alterations in 120 JMP_Pac Patients"
+author: "Yotsawat Pomyen"
+output:
+  html_notebook: default
+  pdf_document: default
+editor_options:
+  markdown:
+    wrap: 72
+---
+
+This is the descriptive analysis on mutational alterations data from Caris patient sequencing reports. The data were extracted from XML by Kasonde using 01.extract_genomic_data.Rmd and processed by using 03.complexheatmap.Rmd. The scripts are in Dang-Lab GitHub Repo under JMP_PAC folder.
+
+```{r helper functions, include=FALSE}
+source("~/JMP_Pac_mutation/Dang-Lab/JMP_PAC/02.oncoplot_helpers.R")
+
+# Load libraries
+suppressPackageStartupMessages(library(ComplexHeatmap))
+suppressWarnings(library(readxl))
+suppressWarnings(library(ggplot2))
+suppressWarnings(library(forcats))
+suppressMessages(library(dplyr))
+suppressWarnings(library(tidyverse))
+suppressWarnings(library(grid))
+suppressWarnings(library(tables))
+#suppressWarnings(library(flextable))
+suppressWarnings(library(gt))
+suppressWarnings(library(janitor))
+suppressWarnings(library(ggmosaic))
+```
+
+### Data used in the analysis: 
+
+1.  **Summary Report (sreport_sheet3)**: This data set provides a
+    detailed report of molecular alterations across genes, summarizing
+    the types and frequencies of mutations observed in the study cohort.
+
+2.  **Clinical Dataset (Masterlist)**: Contains clinical data for all
+    patients included in the study. This masterlist links genetic data
+    with patient identifiers, clinical outcomes, and other relevant
+    clinical parameters.
+
+```{r Load data set, include=FALSE}
+# Load Mutation Summaries from CARIS REPORTS
+setwd("/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC/datasets")
+sreport_sheet3 <- read_xlsx(path = "/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC/datasets/excels/summaries/jmp_pac_mutation_summary_v2.xlsx") # update for final pipeline (mutation summary report)
+head(sreport_sheet3)
+dim(sreport_sheet3)
+colnames(sreport_sheet3)
+cat("Mutation Summaries loaded!!!\n")
+
+# Load Main Datasets ----
+mst_list <- read_xlsx("/oceanus/collab/InternalJeff/users/hxd052/data/JMP_PAC/datasets/excels/JMP_PaC_NAFLD_n502_Extended_Dataset.xlsx")
+head(mst_list)
+dim(mst_list)
+colnames(mst_list)
+cat("Main dataset loaded!!!\n")
+
+# Extract sub-dataframe of patients with sequencing
+sequenced <- mst_list %>% dplyr::select(`JMP_PAC ID`, 
+                                        `Res_CARIS ID`, 
+                                        `Res_SEQ-WTS (Y/N)`, 
+                                        `Res_SEQ-WES (T/F)`, 
+                                        `NASH/NAFLD Status (Y/N)`,
+                                        `Hypertension (Y/N)`,
+                                        `Hyperlipidemia Status (Y/N)`,
+                                        `BMI (kg/m2) at DOS`,
+                                        `DIABETES TYPE (Pre-op)`)
+# Filter rows where `Res_CARIS ID` is Y only (patients with WTS sequencing)
+wts_sequenced <- sequenced %>% dplyr::filter(`Res_SEQ-WTS (Y/N)` == "Y")
+cat("Filtered sequenced patients.\n")
+to.drop <- c('Res_SEQ-WTS (Y/N)','Res_SEQ-WES (T/F)')
+wts_sequenced <- wts_sequenced %>% select(-any_of(to.drop))
+wts_sequenced[which(wts_sequenced$`NASH/NAFLD Status (Y/N)` == 'NA'),3] <- 'N'
+```
+
+```{r Change DIABETES TYPE to DM Status, include=FALSE}
+wts_sequenced <- wts_sequenced %>% mutate(DM = case_when(`DIABETES TYPE (Pre-op)` == "NA" | `DIABETES TYPE (Pre-op)` == "prediabetic" | `DIABETES TYPE (Pre-op)` == "Prediabetic" | `DIABETES TYPE (Pre-op)` == "unspecified" | `DIABETES TYPE (Pre-op)` == "post-pancreatectomy diabetes" ~ "N",
+                               `DIABETES TYPE (Pre-op)` == "type 1" | `DIABETES TYPE (Pre-op)` == "type 2" ~ "Y"))
+```
+
+```{r BMI > 25/30 cutoff, include=FALSE}
+wts_sequenced$`BMI (kg/m2) at DOS` <- as.numeric(wts_sequenced$`BMI (kg/m2) at DOS`)
+
+wts_sequenced <- wts_sequenced %>% mutate(`Obese30` = case_when(`BMI (kg/m2) at DOS` < 30 ~ 'N', `BMI (kg/m2) at DOS` >= 30 ~ 'Y'))
+
+wts_sequenced <- wts_sequenced %>% mutate(`Obese25` = case_when(`BMI (kg/m2) at DOS` <= 25 ~ 'N', `BMI (kg/m2) at DOS` >= 25 ~ 'Y'))
+
+wts_sequenced
+```
+
+```{r MASLD status determination, echo=FALSE}
+wts_sequenced <- wts_sequenced %>% mutate(MASLD25 = case_when(`NASH/NAFLD Status (Y/N)` == "Y" & `Hypertension (Y/N)` == "Y" ~ "Y",
+                                           `NASH/NAFLD Status (Y/N)` == "Y" & `Hyperlipidemia Status (Y/N)` == "Y" ~ "Y",
+                                           `NASH/NAFLD Status (Y/N)` == "Y" & `BMI (kg/m2) at DOS` > 25 ~ "Y",
+                                           `NASH/NAFLD Status (Y/N)` == "Y" & DM == "Y" ~ "Y", 
+                                           `NASH/NAFLD Status (Y/N)` == "N" ~ "N"))
+
+wts_sequenced <- wts_sequenced %>% mutate(MASLD30 = case_when(`NASH/NAFLD Status (Y/N)` == "Y" & `Hypertension (Y/N)` == "Y" ~ "Y",
+                                           `NASH/NAFLD Status (Y/N)` == "Y" & `Hyperlipidemia Status (Y/N)` == "Y" ~ "Y",
+                                           `NASH/NAFLD Status (Y/N)` == "Y" & `BMI (kg/m2) at DOS` > 30 ~ "Y",
+                                           `NASH/NAFLD Status (Y/N)` == "Y" & DM == "Y" ~ "Y", 
+                                           `NASH/NAFLD Status (Y/N)` == "N" ~ "N",
+                                           `NASH/NAFLD Status (Y/N)` == "N" | `Hyperlipidemia Status (Y/N)` == "N" | DM == "Y" & `BMI (kg/m2) at DOS` < 30 ~ "N" ))
+
+masld_criteria <- function(x){
+  table(wts_sequenced[['NASH/NAFLD Status (Y/N)']],wts_sequenced[[x]])
+  }
+mc <- c("Hypertension (Y/N)","Hyperlipidemia Status (Y/N)","DM", "Obese25", "Obese30")
+## everyone is OBESE so no need to include 
+mc_table <- lapply(mc,masld_criteria)
+names(mc_table) <- mc
+mc.fisher <- lapply(mc_table, fisher.test)
+```
+
+### MASLD diagnostic criteria
+According to [AASLD](https://www.aasld.org/new-masld-nomenclature), adults with MASLD must have NAFLD (steatosis) and at least one of the four following conditions: 
+
+- Hypertension 
+  - BP $\ge$ 130/85 mmHg OR
+  - specific antihypertensive drug treatment
+  - We used **diagnosis of hypertension** from EMR 
+
+```{r NAFLD v Hypertension, echo=FALSE}
+nafld.hypertension <- wts_sequenced %>%
+  tabyl(`NASH/NAFLD Status (Y/N)`,`Hypertension (Y/N)`) %>%
+  gt(
+    rowname_col = 'NASH/NAFLD Status (Y/N)'
+  ) %>%
+  tab_spanner(
+    columns = 2:3,
+    label = "Hypertension"
+  ) %>%
+  tab_stubhead(
+    label = "NASH/NAFLD Status"
+  ) %>% 
+  tab_footnote(
+    footnote = paste("Fisher test p-value = ",signif(mc.fisher[["Hypertension (Y/N)"]]$p.value, digits = 3)) 
+  )
+nafld.hypertension
+```
+
+- Hyperlipidemia 
+  - Plasma Triglyceride $\ge$ 1.70 mmol [150 mg/dL] OR
+  - Plasma HDL-cholesterol $\le$ 1.0 mmol [40 mg/dL] (M)/1.3 mmol [50 mg/dL] (F) OR
+  - Lipid lowering treatment
+  - We used **diagnosis of hyperlipidemia** from EMR
+
+```{r NAFLD v Hyperlipidemia, echo=FALSE}
+wts_sequenced$`Hyperlipidemia Status (Y/N)`[52] <- 'N'
+nafld.hyperlipidemia <- wts_sequenced %>%
+  tabyl(`NASH/NAFLD Status (Y/N)`,`Hyperlipidemia Status (Y/N)`) %>%
+  gt(
+    rowname_col = 'NASH/NAFLD Status (Y/N)'
+  ) %>%
+  tab_spanner(
+    columns = 2:3,
+    label = "Hyperlipidemia"
+  ) %>%
+  tab_stubhead(
+    label = "NASH/NAFLD Status"
+  ) %>% 
+  tab_footnote(
+    footnote = paste("Fisher test p-value = ",signif(mc.fisher[["Hyperlipidemia Status (Y/N)"]]$p.value, digits = 3))
+  )
+nafld.hyperlipidemia
+```
+
+- Diabetes
+  - Fasting serum glucose $\ge$ 5.6 nmol/L [100 mg/dL]\ OR 
+  - 2-hour-post-load glucose levels $\ge$ 7.8 nmol/L OR
+  - HbA1c $\ge$ 5.7% [39 nmol/L] OR 
+  - Treatment for DM
+  - We used **diagnosis of Type 1 or Type 2 DM** from EMR, excluding pre-DM/NA/unspecified 
+
+```{r NAFLD v DM, echo=FALSE}
+nafld.dm <- wts_sequenced %>%
+  tabyl(`NASH/NAFLD Status (Y/N)`,`DM`) %>%
+  gt(
+    rowname_col = 'NASH/NAFLD Status (Y/N)'
+  ) %>%
+  tab_spanner(
+    columns = 2:3,
+    label = "Diabetes"
+  ) %>%
+  tab_stubhead(
+    label = "NASH/NAFLD Status"
+  ) %>% 
+  tab_footnote(
+    footnote = paste("Fisher test p-value = ",signif(mc.fisher[["DM"]]$p.value, digits = 3)) 
+  )
+nafld.dm
+```
+
+- Obesity 
+  - BMI $\ge$ 25 OR 
+  - WC $\ge$ 94 cm(M)/80 cm(F) OR 
+  - Ethnicity adjusted 
+  - In our analysis we used two criteria: **BMI $\ge$ 25** and **BMI $\ge$ 30**, with this cutoff everyone is obese 
+
+Obesity with BMI $\ge$ 25
+```{r NAFLD v Obese BMI > 25, echo=FALSE}
+nafld.obese25 <- wts_sequenced %>%
+  tabyl(`NASH/NAFLD Status (Y/N)`,`Obese25`) %>%
+  gt(
+    rowname_col = 'NASH/NAFLD Status (Y/N)'
+  ) %>%
+  tab_spanner(
+    columns = 2:3,
+    label = "Obese (BMI >= 25)"
+  ) %>%
+  tab_stubhead(
+    label = "NASH/NAFLD Status"
+  ) %>% 
+  tab_footnote(
+    footnote = paste("Fisher test p-value = ",signif(mc.fisher[["Obese25"]]$p.value, digits = 3)) 
+  )
+nafld.obese25
+```
+\pagebreak
+Obesity with BMI $\ge$ 30 
+```{r NAFLD v Obese BMI > 30, echo=FALSE}
+nafld.obese30 <- wts_sequenced %>%
+  tabyl(`NASH/NAFLD Status (Y/N)`,`Obese30`) %>%
+  gt(
+    rowname_col = 'NASH/NAFLD Status (Y/N)'
+  ) %>%
+  tab_spanner(
+    columns = 2:3,
+    label = "Obese (BMI >= 30)"
+  ) %>%
+  tab_stubhead(
+    label = "NASH/NAFLD Status"
+  ) %>% 
+  tab_footnote(
+    footnote = paste("Fisher test p-value = ",signif(mc.fisher[["Obese30"]]$p.value, digits = 3)) 
+  )
+nafld.obese30
+```
+
+### MASLD Patient Status
+
+##### MASLD Patient Status with BMI $\ge$ 25
+```{r MASLD Patient Status BMI 25, echo=FALSE}
+masld25 <- wts_sequenced %>%
+  tabyl(`MASLD25`) %>%
+  gt(
+    rowname_col = 'MASLD25'
+  ) %>%
+  tab_spanner(
+    columns = 1:3,
+    label = "MASLD 25"
+  ) 
+masld25
+```
+
+##### MASLD Patient Status with BMI $\ge$ 30
+```{r MASLD Patient Status BMI 30, echo=FALSE}
+masld30 <- wts_sequenced %>%
+  tabyl(`MASLD30`) %>%
+  gt(
+    rowname_col = 'MASLD30'
+  ) %>%
+  tab_spanner(
+    columns = 1:3,
+    label = "MASLD 30"
+  )
+masld30
+```
+
+MASLD patients between BMI $\ge$ 25 or 30 is not different
+
+### KRAS Mutation v MASLD
+```{r Extract KRAS mutation types in long format, echo=FALSE}
+kras_mutation <- sreport_sheet3 %>% filter(biomarkerName == 'KRAS' & result_group == 'Mutated')
+colnames(kras_mutation)[2] <- 'JMP_PAC ID'
+kras_mutation <- as_tibble(merge(kras_mutation, wts_sequenced, by = 'JMP_PAC ID', all = T)) %>% filter(biomarkerName == 'KRAS' & result_group == 'Mutated')
+
+colnames(kras_mutation)[9:10] <- c('KRAS_Mutation','KRAS_Protein')
+```
+
+```{r KRAS nucleotide changes plot, echo=FALSE}
+kras.coding.gg <- ggplot(data = kras_mutation) + 
+  geom_mosaic(aes(x = product(KRAS_Mutation, MASLD25), fill = KRAS_Mutation), divider = c('vbar','hspine')) +
+  theme_minimal() +
+  theme(axis.ticks.x = element_blank(), panel.grid.major = element_blank()) + 
+  labs(y = 'KRAS mutation', x = 'MASLD Status', title = paste('KRAS nucleotide changes\nFisher test p-value = ',signif(fisher.test(with(kras_mutation, table(KRAS_Mutation, MASLD25)))$p.value, digits = 3), sep = ''))
+kras.coding.gg
+```
+
+```{r KRAS protein changes plot, echo=FALSE}
+kras.protein <- with(kras_mutation, table(KRAS_Protein,MASLD25))
+
+kras.protein.gg <- ggplot(data = kras_mutation) + 
+  geom_mosaic(aes(x = product(KRAS_Protein, MASLD25), fill = KRAS_Protein), divider = c('vbar','hspine')) +
+  theme_minimal() +
+  theme(axis.ticks.x = element_blank(), panel.grid.major = element_blank()) + 
+  labs(y = 'KRAS AA Changes', x = 'MASLD Status', title = paste('KRAS amino acid changes\nFisher test p-value = ',signif(fisher.test(kras.protein)$p.value, digits = 3), sep = ''))
+kras.protein.gg
+```
+
+```{r, echo=FALSE}
+
+kras_mutation <- kras_mutation %>% mutate(G12D = case_when(KRAS_Protein == 'p.G12D' ~ 'Y',
+          KRAS_Protein != 'p.G12D' ~ 'N'))
+
+kras.G12D <- with(kras_mutation, table(MASLD25,G12D))
+
+kras.g12d.gg <- ggplot(data = kras_mutation) + 
+  geom_mosaic(aes(x = product(G12D, MASLD25), fill = G12D), divider = c('vbar','hspine')) +
+  theme_minimal() +
+  theme(axis.ticks.x = element_blank(), panel.grid.major = element_blank()) + 
+  labs(y = 'KRAS G12D v other changes', x = 'MASLD Status', title = paste('KRAS G12D status\nFisher test p-value = ',signif(fisher.test(kras.G12D)$p.value, digits = 3), sep = '')) +
+  scale_fill_manual(values = c('darkgreen','darkred'))
+
+kras.g12d.gg
+```
+\pagebreak
+### Other Cancer Type Relevant Biomarkers status
+
+```{r Extract all Cancer Type Relevant Biomarkers, echo=FALSE}
+cancer_biomarker <- c('BRAF','Microsatellite Instability (MSI)','NTRK1','RET','Tumor Mutational Burden (TMB)','ATM','BRCA1','BRCA2','KRAS','MTAP','NRG1','PALB2','SMAD4','Genomic Loss of Heterozygosity (LOH)','HLA-A','HLA-B','HLA-C')
+```
+#### BRAF
+```{r BRAF CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRAF')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRAF') %>% filter(result %in% c('Amplification Not Detected', 'Indeterminate')) %>% mutate(result = replace(result, result == 'Amplification Not Detected', 'Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'BRAF Aplification'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+```{r BRAF DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRAF')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRAF') %>% filter(result %in% c('Wild Type', 'Likely Pathogenic Variant', 'Pathogenic Variant')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:4,
+      label = 'BRAF DNA-seq'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r BRAF RNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRAF')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRAF') %>% filter(result %in% c('Fusion Not Detected')) %>% mutate(result = replace(result, result == 'Fusion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2,
+      label = 'BRAF Fusion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) #%>%
+    #tab_footnote(
+     # footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+     # )
+```
+\pagebreak
+#### Genomic Signatures
+```{r Microsatellite Instability (MSI) table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'Microsatellite Instability (MSI)')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'Microsatellite Instability (MSI)'))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result_group`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:4,
+      label = 'Microsatellite Instability'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result_group)$p.value, digits = 3))
+      )
+```
+
+```{r Tumor Mutational Burden (TMB) table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'Tumor Mutational Burden (TMB)')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'Tumor Mutational Burden (TMB)'))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result_group`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'Tumor Mutational Burden'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result_group)$p.value, digits = 3))
+      )
+```
+
+```{r Genomic Loss of Heterozygosity (LOH) table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'Genomic Loss of Heterozygosity (LOH)')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'Genomic Loss of Heterozygosity (LOH)'))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result_group`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:4,
+      label = 'Genomic LoH'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result_group)$p.value, digits = 3))
+      )
+```
+\pagebreak
+#### NTRK1 
+```{r NTRK1 CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'NTRK1')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'NTRK1') %>% filter(result %in% c('Amplification Not Detected','Indeterminate','Intermediate')) %>% mutate(result = replace(result, result == 'Amplification Not Detected', 'Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:4,
+      label = 'NTRK1 Amplification'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r NTRK1 DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'NTRK1')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'NTRK1') %>% filter(result %in% c('Wild Type','Variant of Uncertain Significance')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance', 'VUS')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'NTRK1 Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r NTRK1 RNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'NTRK1')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'NTRK1') %>% filter(result == 'Fusion Not Detected') %>% mutate(result = replace(result, result == 'Fusion Not Detected', 'Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2,
+      label = 'NTRK1 Fusion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) #%>%
+    # tab_footnote(
+      # footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      # )
+```
+\pagebreak
+#### RET
+```{r RET CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'RET')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'RET') %>% filter(result %in% c('Amplification Not Detected','Indeterminate')) %>% mutate(result = replace(result, result == 'Amplification Not Detected', 'Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'RET Amplification'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r RET DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'RET')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'RET') %>% filter(result %in% c('Wild Type','Variant of Uncertain Significance','Likely Benign Variant')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance', 'VUS')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'RET Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r RET RNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'RET')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'RET') %>% filter(result == 'Fusion Not Detected') %>% mutate(result = replace(result, result == 'Fusion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2,
+      label = 'RET Fusion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) #%>%
+    #tab_footnote(
+      #footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      #)
+```
+\pagebreak
+#### ATM 
+```{r ATM CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'ATM')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'ATM') %>% filter(result %in% c('Indeterminate','Deletion Not Detected')) %>% mutate(result = replace(result, result == 'Deletion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'ATM Deletion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r ATM DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'ATM')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'ATM') %>% filter(result %in% c('Wild Type', 'Variant of Uncertain Significance','Likely Pathogenic Variant','Pathogenic Variant')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance', 'VUS')))
+  
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:5,
+      label = 'ATM Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+\pagebreak
+#### BRAC1
+```{r BRCA1 CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRCA1')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRCA1') %>% filter(result %in% c('Deletion Not Detected','Indeterminate')) %>% mutate(result = replace(result, result == 'Deletion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'BRCA1 Deletion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r BRCA1 DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRCA1')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRCA1') %>% filter(result %in% c('Wild Type','Variant of Uncertain Significance')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance','VUS')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'BRCA1 Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+\pagebreak
+#### BRCA2
+```{r BRCA2 CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRCA2')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRCA2') %>% filter(result %in% c('Deletion Not Detected','Indeterminate')) %>% mutate(result = replace(result, result == 'Deletion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'BRCA2 Deletion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r BRCA2 DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'BRCA2')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'BRCA2') %>% filter(result %in% c('Wild Type','Variant of Uncertain Significance','Pathogenic Variant')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance', 'VUS')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:4,
+      label = 'BRCA2 Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+\pagebreak
+
+#### MTAP
+```{r MTAP CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'MTAP')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'MTAP') %>% filter(result %in% c('Deletion Not Detected','Indeterminate')) %>% mutate(result = replace(result, result == 'Deletion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'MTAP Deletion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r MTAP DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'MTAP')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'MTAP') %>% filter(result %in% c('variantnotdetected','indeterminate')) %>% mutate(result = replace(result, result == 'variantnotdetected','not detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'MTAP Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+#### NRG1
+```{r NRG1 RNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'NRG1')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'NRG1') %>% mutate(result = replace(result, result == 'Fusion Not Detected', 'Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'NRG1 Fusion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+\pagebreak
+#### PALB2 
+```{r PALB2 CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'PALB2')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'PALB2') %>% filter(result %in% c('Deletion Not Detected','Indeterminate')) %>% mutate(result = replace(result, result == 'Deletion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'PALB2 Deletion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r PALB2 DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'PALB2')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'PALB2') %>% filter(result %in% c('Wild Type','Variant of Uncertain Significance')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance', 'VUS')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'PALB2 Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+\pagebreak
+#### SMAD4
+```{r SMAD4 CNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'SMAD4')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'SMAD4') %>% filter(result %in% c('Deletion Not Detected','Deleted','Indeterminate')) %>% mutate(result = replace(result, result == 'Deletion Not Detected','Not Detected')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:4,
+      label = 'SMAD4 Deletion'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+
+```{r SMAD4 DNA-seq table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'SMAD4')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'SMAD4') %>% filter(result %in% c('Wild Type','Variant of Uncertain Significance','Likely Pathogenic Variant','Pathogenic Variant')) %>% mutate(result = replace(result, result == 'Variant of Uncertain Significance','VUS')))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:5,
+      label = 'SMAD4 Mutation'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result)$p.value, digits = 3))
+      )
+```
+\pagebreak
+#### HLA-A
+```{r HLA-A table, echo=FALSE}
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == 'HLA-A')
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == 'HLA-A'))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  #with(mut_table, table(result_group,MASLD25))
+  mut_table %>%
+    tabyl(`MASLD25`,`result_group`,) %>%
+    gt(
+      rowname_col = 'MASLD25'
+    ) %>%
+    tab_spanner(
+      columns = 2:3,
+      label = 'HLA-A'
+    ) %>%
+    tab_stubhead(
+      label = 'MASLD Status'
+    ) %>%
+    tab_footnote(
+      footnote = paste('Fisher test p-value = ',signif(fisher.test(mut_table$MASLD25,mut_table$result_group)$p.value, digits = 3))
+      )
+```
+
+#### There is no HLA-B and HLA-C mutation. 
+
+
+```{r 2Extract all Cancer Type Relevant Biomarkers, echo=FALSE}
+cancer_biomarker <- c('BRAF','Microsatellite Instability (MSI)','NTRK1','RET','Tumor Mutational Burden (TMB)','ATM','BRCA1','BRCA2','KRAS','MTAP','NRG1','PALB2','SMAD4','Genomic Loss of Heterozygosity (LOH)','HLA-A','HLA-B','HLA-C')
+```
+
+```{r SMAD4 mutation, eval=FALSE, include=FALSE}
+smad4_mutation <- sreport_sheet3 %>% filter(biomarkerName == 'SMAD4' & result_group == 'Mutated')
+colnames(smad4_mutation)[2] <- 'JMP_PAC ID'
+smad4_mutation <- as_tibble(merge(smad4_mutation, wts_sequenced, by = 'JMP_PAC ID', all = T)) %>% filter(biomarkerName == 'SMAD4' & result_group == 'Mutated')
+
+colnames(smad4_mutation)[9:10] <- c('SMAD4_coding','SMAD4_Protein')
+#smad4.coding <- with(smad4_mutation, table(SMAD4_coding,MASLD25))
+
+#smad4.protein <- with(smad4_mutation, table(SMAD4_Protein,MASLD25))
+
+hlaa_mutation <- sreport_sheet3 %>% filter(biomarkerName == 'HLA-A' & result_group == 'Mutated')
+colnames(hlaa_mutation)[2] <- 'JMP_PAC ID'
+hlaa_mutation <- as_tibble(merge(hlaa_mutation, wts_sequenced, by = 'JMP_PAC ID', all = T)) %>% filter(biomarkerName == 'HLA-A' & result_group == 'Mutated')
+
+#hlaa.class <- with(hlaa_mutation, table(mhClass,MASLD25))
+#hlaa.genotype <- with(hlaa_mutation, table(genotype,MASLD25))
+```
+
+
+```{r code not working, eval=FALSE, include=FALSE}
+ctrb <- list()
+ctrb_table <- function(biomarker){
+  mut_table <- sreport_sheet3 %>% filter(biomarkerName == biomarker)
+  colnames(mut_table)[2] <- 'JMP_PAC ID'
+  mut_table <- as_tibble(merge(mut_table, wts_sequenced, by = 'JMP_PAC ID', all = T) %>% filter(biomarkerName == biomarker))
+  # colnames(mut_table)[10] <- cancer_biomarker[1]
+  with(mut_table, table(result_group,MASLD25))
+}
+ctrb <- lapply(cancer_biomarker,ctrb_table)
+names(ctrb) <- cancer_biomarker
+
+
+
+
+
+for (i in 1:length(ctrb)){
+  wts_sequenced %>%
+  tabyl(`MASLD25`,names(ctrb[i])) %>%
+  gt(
+    rowname_col = 'MASLD25'
+  ) %>%
+  tab_spanner(
+    columns = 1:2,
+    label = x
+  ) %>%
+  tab_stubhead(
+    label = "MASLD Status"
+  ) %>% 
+  tab_footnote(
+    footnote = paste("Fisher test p-value = ",signif(fisher.test(ctrb[[i]])$p.value, digits = 3)) 
+  )
+}
+```
