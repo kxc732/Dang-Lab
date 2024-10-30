@@ -1,0 +1,286 @@
+---
+title: "Analysis of RNA-seq Data EV/KO"
+author: "Kasonde Chewe"
+file: "01.RNA_sgEV_sgNELFE_boxplots_g1andg2_up_down.Rmd"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output: html_notebook
+---
+
+# Description
+Notebook includes the analysis workflow for RNA-seq, HEP3B sgEV and sgNELFE knockout experiment.
+The analysis includes, fold change (log2FC) computation, statisical analysis and boxplot visualization. 
+A higher quality render is provided through graphpad prism!
+An accompanying, single executable R script can be found for publication 
+at XXXX. Analysis references and environment configuration is included at the 
+end of the following notebook.
+
+
+```{r CLEAR ENV VARIABLES, echo=FALSE, include=FALSE}
+# clear all environment variables
+rm(list=ls())
+gc() # call garbage collector 
+options(digits = 5)
+```
+
+
+
+
+
+```{r LOAD LIBRARIES AND HELPERS, include=TRUE, echo=FALSE, message=FALSE}
+library(dplyr)
+library(ggplot2)
+library(tidyverse)
+library(writexl)
+library(ggpubr)
+```
+
+
+```{r LOAD CSV FILES AND GROUPS,  include=TRUE, echo=FALSE, message=FALSE}
+dataset_dir <- "../2datasheets/datasets"
+#peaks_dir <- "~/Projects/Condensate_Paper/01_GROSEQ_FINAL/peaks"
+
+# read in datasets
+rna_counts <- read.csv(paste0(dataset_dir,"/countsMatrix_RNA-sgEV-sgKO_with_genes.csv"))
+groupI <- read.delim(paste0(dataset_dir,"/groupI_genes.bed"), header = FALSE)
+groupII <- read.delim(paste0(dataset_dir,"/groupII_genes.bed"),  header = FALSE)
+
+```
+
+
+
+
+```{r COUNT MATRIX PREPROCESSING & EDA, include=TRUE, echo=FALSE, message=FALSE}
+
+library(ggprism)
+# Summarize counts for duplicate gene names by taking the sum
+rna.anno.sum.counts.matrix <- rna_counts %>%
+  group_by(Gene.Name) %>%
+  summarise(across(everything(), sum, .names = "sum_{.col}")) %>%
+  rename_with(~ sub("^sum_", "", .))
+dim(rna.anno.sum.counts.matrix)
+head(rna.anno.sum.counts.matrix)
+
+# Compute the average expression for each triplicate
+# length is 7921 genes
+rna.anno.sum.merged.counts.matrix <- rna.anno.sum.counts.matrix %>%
+  mutate(
+    EV_mean = rowMeans(dplyr::select(., "EV.R1", "EV.R2", "EV.R3")),
+    KO_mean = rowMeans(dplyr::select(., "KO.R1", "KO.R2", "KO.R3"))
+  )
+
+
+# Prefiltering exclude low expression genes 
+# length is 7225 genes
+rna.prefiltered.counts.matrix <- rna.anno.sum.merged.counts.matrix %>%
+  filter(Gene.Name != "") %>%
+  filter(EV_mean >= 1 | KO_mean >= 1) %>% drop_na()
+
+# Subset matrix for all gene name and averaged, filtered columns 
+rna.counts.ev.ko <- as.data.frame(rna.anno.sum.merged.counts.matrix[,c("Gene.Name", "EV_mean", "KO_mean")])
+dim(rna.counts.ev.ko)
+head(rna.counts.ev.ko)
+
+# # save dataframe copy 
+# write_xlsx(rna.counts.ev.ko, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/merged_countsMatrix_RNA-sgEV-sgKO_with_genes.xlsx")
+
+# Compute log2FC(sgNELFE/sgEV) 
+# Set rownames to Gene.Name and remove Gene.Name column
+rna.counts.ev.ko$log2FC <- log2(rna.counts.ev.ko$KO_mean + 1) - log2(rna.counts.ev.ko$EV_mean + 1)
+```
+
+
+```{r}
+# GroupI 
+# Subset genes in rna.counts.ev.ko by common gene in groupI$V5
+groupI_genes <- groupI$V5
+groupI_counts <- rna.counts.ev.ko %>%
+  filter(Gene.Name %in% groupI_genes) %>% drop_na()
+
+groupI_counts$sgEV <- log2(groupI_counts$EV_mean + 0.01)
+groupI_counts$sgNELFE <- log2(groupI_counts$KO_mean + 0.01)
+
+
+groupI_counts_up <- subset(groupI_counts, log2FC > 0)
+groupI_counts_down <- subset(groupI_counts, log2FC < 0)
+
+# GroupII
+# Subset genes in rna.counts.ev.ko by common gene in groupII$V4
+groupII_genes <- groupII$V4
+groupII_counts <- rna.counts.ev.ko %>%
+  filter(Gene.Name %in% groupII_genes) %>% drop_na()
+
+
+groupII_counts$sgEV <- log2(groupII_counts$EV_mean + 0.01)
+groupII_counts$sgNELFE <- log2(groupII_counts$KO_mean + 0.01) 
+
+groupII_counts_up <- subset(groupII_counts, log2FC > 0)
+groupII_counts_down <- subset(groupII_counts, log2FC < 0)
+
+# Convert data to long format for Group I
+groupI_counts_long <- groupI_counts %>%
+  pivot_longer(cols = c("sgEV", "sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+# Convert data to long format for Group I
+groupI_counts_up_long <- groupI_counts_up %>%
+  pivot_longer(cols = c("sgEV", "sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+# Convert data to long format for Group I
+groupI_counts_down_long <- groupI_counts_down %>%
+  pivot_longer(cols = c("sgEV", "sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+
+# Convert data to long format for Group II
+groupII_counts_long <- groupII_counts %>%
+  pivot_longer(cols = c("sgEV", "sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+
+# Convert data to long format for Group I
+groupII_counts_up_long <- groupII_counts_up %>%
+  pivot_longer(cols = c("sgEV", "sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+# Convert data to long format for Group I
+groupII_counts_down_long <- groupII_counts_down %>%
+  pivot_longer(cols = c("sgEV", "sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+```
+
+
+
+```{r}
+# statistical tests 
+# groupI 
+g1u_pvalue <- compare_means(Expression ~ Condition, data=groupI_counts_up_long, method = "t.test")
+print("\n  Group I Upregulated Genes -- \n T-test statistics \n")
+print(as.data.frame(g1u_pvalue))
+
+g1d_pvalue <- compare_means(Expression ~ Condition, data=groupI_counts_down_long, method = "t.test")
+g1d_pvalue
+
+# groupI 
+g2u_pvalue <- compare_means(Expression ~ Condition, data=groupII_counts_up_long, method = "t.test", p.adjust.method = "BH")
+g2d_pvalue <- compare_means(Expression ~ Condition, data=groupII_counts_down_long, method = "t.test")
+g2u_pvalue
+g2d_pvalue
+
+
+```
+
+
+```{r, fig.height=9, fig.width=8}
+options( digits = 6)
+# Group I Violin PLots 
+# up
+g1u = length(groupI_counts_up_long$Gene.Name)
+
+pdf("~/Projects/Condensate_Paper/02_RNASEQ_FINAL/plots/violinplots/rnaseq_violinPlots_groupI_upregulated_sgEV_sgNELFE.pdf")
+ggplot(groupI_counts_up_long, aes(x = Condition, y = Expression , fill = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  labs(title = paste0("RNAseq Group I Upregulated Genes, n=", g1u ),
+       x = "Condition",
+       y = "log2(CPM)") +
+  scale_fill_manual(values = c("sgEV" = "blue", "sgNELFE" = "red")) + 
+  theme_prism(base_size = 18) + 
+  stat_compare_means(method = "t.test", paired = FALSE, label = "p.format") 
+dev.off()
+
+g1d = length(groupI_counts_down_long$Gene.Name)
+pdf("~/Projects/Condensate_Paper/02_RNASEQ_FINAL/plots/violinplots/rnaseq_violinplots_groupI_downregulated_sgEV_sgNELFE.pdf")
+ggplot(groupI_counts_down_long, aes(x = Condition, y = Expression, fill = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2) +
+  labs(title = paste0("RNAseq Group I Downregulated Genes, n=", g1d ),
+       x = "Condition",
+       y = "log2(CPM)") +
+  scale_fill_manual(values = c("sgEV" = "blue", "sgNELFE" = "red")) + 
+  theme_prism(base_size = 18) + 
+  stat_compare_means(method = "t.test", paired = FALSE, label = "p.format")  # or paired = TRUE if it is paired data
+dev.off()
+```
+
+
+```{r, fig.height=9, fig.width=8}
+# Group II Violin PLots 
+# up
+g2u = length(groupII_counts_up_long$Gene.Name)
+pdf("~/Projects/Condensate_Paper/02_RNASEQ_FINAL/plots/violinplots/rnaseq_violinPlots_groupII_upregulated_sgEV_sgNELFE.pdf")
+ggplot(groupII_counts_up_long, aes(x = Condition, y = Expression , fill  = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  theme_minimal() +
+  labs(title = paste0("RNAseq Group II Upregulated Genes, n=", g2u ),
+       x = "Condition",
+       y = "log2(CPM)") +
+  scale_fill_manual(values = c("sgEV" = "blue", "sgNELFE" = "red")) + 
+  theme_prism(base_size = 18) + 
+  stat_compare_means(method = "t.test", paired = FALSE, label = "p.format") 
+dev.off()
+
+# down 
+g2d = length(groupII_counts_down_long$Gene.Name)
+pdf("~/Projects/Condensate_Paper/02_RNASEQ_FINAL/plots/violinplots/rnaseq_violinplots_groupII_downregulated_sgEV_sgNELFE.pdf")
+ggplot(groupII_counts_down_long, aes(x = Condition, y = Expression, fill = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  theme_minimal() +
+  labs(title = paste0("RNAseq Group II Downregulated Genes, n=", g2d ),
+       x = "Condition",
+       y = "log2(CPM)") +
+  scale_fill_manual(values = c("sgEV" = "blue", "sgNELFE" = "red")) + 
+  theme_prism(base_size = 18) + 
+  stat_compare_means(method = "t.test", paired = FALSE, label = "p.format")
+dev.off()
+```
+
+
+
+```{r}
+# Create the boxplot for Group I
+ggplot(groupI_counts_up_long, aes(x = Condition, y = log2(Expression+0.1) , color = Condition)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Boxplot of EV and KO Mean Expressions for Group I Genes",
+       x = "Condition",
+       y = "log2(CPM)") +
+  scale_fill_manual(values = c("EV_mean" = "blue", "KO_mean" = "red")) + 
+  theme_prism(base_size = 18)
+
+# Create the boxplot for Group II
+ggplot(groupII_counts_long, aes(x = Condition, y = log2(Expression+0.1), color = Condition)) +
+  geom_boxplot() +
+  theme_minimal() +
+  labs(title = "Boxplot of EV and KO Mean Expressions for Group II Genes",
+       x = "Condition",
+       y = "log2(CPM)") +
+  scale_fill_manual(values = c("EV_mean" = "blue", "KO_mean" = "red")) + 
+  theme_prism(base_size = 18)
+```
+
+
+
+
+```{r}
+writexl::write_xlsx(groupI_counts, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/group1.xlsx")
+
+writexl::write_xlsx(groupI_counts_up, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/group1_up.xlsx")
+writexl::write_xlsx(groupI_counts_down, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/group1_down.xlsx")
+
+
+writexl::write_xlsx(groupII_counts, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/group2.xlsx")
+writexl::write_xlsx(groupII_counts_up, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/group2_up.xlsx")
+writexl::write_xlsx(groupII_counts_down, "~/Projects/Condensate_Paper/02_RNASEQ_FINAL/datasets/group2_down.xlsx")
+
+```
+
