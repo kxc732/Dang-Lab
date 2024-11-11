@@ -124,6 +124,13 @@ group1_tpm.long.up <- group1_tpm %>%
                values_to = "Expression")
 ```
 
+```{r write DEGs for group I, include=TRUE, echo=FALSE, message=FALSE}
+group1_tpm.DEG <- group1_tpm %>% 
+  filter(adj.pval < 0.1) %>% 
+  select(Gene.Name,EV_mean,KO_mean,adj.pval,log2FC)
+write.table(group1_tpm.DEG, file = "~/JMP_Pac_mutation/Dang-Lab/NELFE_condensate/RNAseq/DEG_RNA-seq/DEG_RNA-seq_groupI.txt", quote = F, sep = "\t")
+```
+
 ```{r remove outliers, include=TRUE, echo=FALSE, message=FALSE}
 remove_outliers <- function(x, na.rm = TRUE, ...) {
   qnt <- quantile(x, probs = c(.25, .75), na.rm = na.rm, ...)
