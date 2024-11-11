@@ -1,0 +1,266 @@
+---
+title: "RNA-seq analysis of NELFE KO vs EV"
+author: "Yotsawat Pomyen"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+file: "RNA-seq_NELFE_KO_EV_group1vs2_2024NOV11.Rmd"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Description 
+This document is the analysis of RNA-seq experiment on HEP3B sgNELFE Knock-out (KO) and sgEV (EV) between group I and group II genes identified by common regions based on ATAC-seq, H3K-seq, and GRO-seq analyses. 
+
+The assumption for this analysis is that the common regions that are affected by NELFE KO will have less RNA accessibility, thereby make the RNA expression lower too. 
+
+
+
+```{r load libraries, include=TRUE, echo=FALSE, message=FALSE}
+library(data.table)
+library(dplyr)
+library(ggprism)
+library(ggplot2)
+library(tidyverse)
+library(writexl)
+library(ggpubr)
+```
+
+```{r load data from Adams original RNA-seq quantification, include=TRUE, echo=FALSE, message=FALSE}
+## directory where the data table is 
+## original data is in Adam's rna directory
+## /oceanus/collab/InternalJeff/users/hxd052/scratch/DangLab/Adam.W/rna/0genes
+data.dir <- "/oceanus/collab/InternalJeff/users/hxd052/data/NELFE_condensate/RNAseq/0genes/"
+group.dir <- "/oceanus/collab/InternalJeff/users/hxd052/data/NELFE_condensate/RNAseq/2datasheets/datasets/"
+## 
+##
+## Knock-out
+ko.r1 <- read.delim(file = paste0(data.dir,"NELFE-R1.genes.results"), header = T, sep = "\t")
+ko.r2 <- read.delim(file = paste0(data.dir,"NELFE-R2.genes.results"), header = T, sep = "\t")
+ko.r3 <- read.delim(file = paste0(data.dir,"NELFE-R3.genes.results"), header = T, sep = "\t")
+
+## EV control
+ev.r1 <- read.delim(file = paste0(data.dir,"EV-R1.genes.results"), header = T, sep = "\t")
+ev.r2 <- read.delim(file = paste0(data.dir,"EV-R2.genes.results"), header = T, sep = "\t")
+ev.r3 <- read.delim(file = paste0(data.dir,"EV-R3.genes.results"), header = T, sep = "\t")
+
+## group I genes 
+group1 <- read.delim(file = paste0(group.dir,"groupI_genes.bed"), header = F)
+group2 <- read.delim(file = paste0(group.dir,"groupII_genes.bed"), header = F)
+
+## make sure that the gene_id column is identical for every files
+identical(ko.r1$gene_id, ev.r3$gene_id)
+
+## create a new TPM table for EV and KO data
+rna_tpm <- as.data.frame(cbind(ev.r1$gene_id, ev.r1$TPM, ev.r2$TPM, ev.r3$TPM, ko.r1$TPM, ko.r2$TPM, ko.r3$TPM))
+rna_tpm[,2:7] <- sapply(rna_tpm[,2:7], as.numeric)
+colnames(rna_tpm) <- c("Gene.Name","EV.R1","EV.R2","EV.R3","KO.R1","KO.R2","KO.R3")
+
+## remove ensembl id from gene name
+rna_tpm$Gene.Name <- sub(".*_","",rna_tpm$Gene.Name)
+```
+
+```{r summarize duplicated gene names using average, include=TRUE, echo=FALSE, message=FALSE}
+library(dplyr)
+## number of rows: 61852 entries
+## remove rows with all zeros, remaining: 32291 entries
+rna_tpm <- rna_tpm[apply(rna_tpm[,-1], 1, function(x) !all(x==0)),]
+
+## remove rows with Y_RNA, remaining: 32133
+rna_tpm <- rna_tpm[-which(rna_tpm$Gene.Name == "RNA"),]
+
+## select duplicated rows with maximum expression, remaining: 31984
+rna_tpm <- rna_tpm %>% group_by(Gene.Name) %>% 
+  summarise_if(is.numeric, max)
+```
+
+```{r calculate mean of two groups, include=TRUE, echo=FALSE, message=FALSE}
+rna_tpm <- rna_tpm %>% 
+  mutate(
+    EV_mean = rowMeans(dplyr::select(.,"EV.R1","EV.R2","EV.R3")),
+    KO_mean = rowMeans(dplyr::select(.,"KO.R1","KO.R2","KO.R3"))
+  )
+```
+
+```{r calculate p-value and adjusted p-value between EV and KO, include=TRUE, echo=FALSE, message=FALSE}
+## t-test function
+t.rna <- function(i){
+  tryCatch(
+    t.test(rna_tpm[i,2:4], rna_tpm[i,5:7], paired = F)$p.val,
+    error = function(e) {NA}
+  )
+}
+
+## calculate p-value 
+rna_tpm$pval <- sapply(1:nrow(rna_tpm), t.rna)
+
+## calculate adjusted p-value (FDR - BH)
+rna_tpm$adj.pval <- p.adjust(rna_tpm$pval, method = "BH")
+
+```
+
+```{r calculate group 1 genes, include=TRUE, echo=FALSE, message=FALSE}
+## get group 1 genes counts
+g1.genes <- group1[,5]
+group1_tpm <- rna_tpm %>% 
+  filter(Gene.Name %in% g1.genes) %>% drop_na()
+
+group1_tpm$sgEV <- log2(group1_tpm$EV_mean + 1)
+group1_tpm$sgNELFE <- log2(group1_tpm$KO_mean + 1)
+
+## calculate log2FC
+group1_tpm$log2FC <- log2((group1_tpm$KO_mean + 1)/(group1_tpm$EV_mean + 1))
+
+## convert to long format, select log2FC > log2(1.5)
+group1_tpm.long.up <- group1_tpm %>% 
+  # filter(log2FC > log2(1.5)) %>%
+  filter(adj.pval < 0.1) %>%
+  pivot_longer(cols = c("sgEV","sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+```
+
+```{r remove outliers, include=TRUE, echo=FALSE, message=FALSE}
+remove_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs = c(.25, .75), na.rm = na.rm, ...)
+  val <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - val)] <- NA
+  y[x > (qnt[2] + val)] <- NA
+  y
+}
+```
+
+```{r boxplot Group I genes Up-regulated, fig.height=9, fig.width=8, include=TRUE, echo=FALSE, message=FALSE}
+options(digits = 6)
+g1u <- length(unique(group1_tpm.long.up$Gene.Name))
+
+g1.cl.noOutliers <- group1_tpm.long.up %>% 
+  group_by(Condition) %>% 
+  mutate(Expression = remove_outliers(Expression)) %>% ungroup()
+
+ggplot(g1.cl.noOutliers, aes(x = Condition, y = Expression , fill = Condition, color = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  labs(title = paste0("RNAseq Group I\nup-regulated Genes, n=", g1u ),
+       x = "Condition",
+       y = "log2(TPM)") +
+  scale_fill_manual(values = c("sgEV" = "blue", 
+                               "sgNELFE" = "darkred")) + 
+  scale_color_manual(values = c("sgEV" = "white",
+                                "sgNELFE" = "white")) +
+  theme_prism(base_size = 18) + 
+  stat_compare_means(method = "t.test", paired = FALSE, label = "p.format", label.y = 7.5, label.x = 1.5)
+```
+
+```{r calculate group 2 genes, include=TRUE, echo=FALSE, message=FALSE}
+## get group 1 genes counts
+g2.genes <- group2[,4]
+group2_tpm <- rna_tpm %>% 
+  filter(Gene.Name %in% g2.genes) %>% drop_na()
+
+group2_tpm$sgEV <- log2(group2_tpm$EV_mean + 1)
+group2_tpm$sgNELFE <- log2(group2_tpm$KO_mean + 1)
+
+## calculate log2FC
+group2_tpm$log2FC <- log2((group2_tpm$KO_mean + 1)/(group2_tpm$EV_mean + 1))
+
+## convert to long format, select log2FC > log2(1.5)
+group2_tpm.long.up <- group2_tpm %>% 
+  # filter(log2FC > log2(1.5)) %>%
+  filter(adj.pval < 0.1) %>%
+  pivot_longer(cols = c("sgEV","sgNELFE"),
+               names_to = "Condition",
+               values_to = "Expression")
+```
+
+```{r boxplot Group II genes Up-regulated, fig.height=9, fig.width=8, include=TRUE, echo=FALSE, message=FALSE}
+options(digits = 6)
+g2u <- length(unique(group2_tpm.long.up$Gene.Name))
+
+g2.cl.noOutliers <- group2_tpm.long.up %>% 
+  group_by(Condition) %>% 
+  mutate(Expression = remove_outliers(Expression)) %>% ungroup()
+
+ggplot(g2.cl.noOutliers, aes(x = Condition, y = Expression , fill = Condition, color = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  labs(title = paste0("RNAseq Group II\nup-regulated Genes, n=", g2u ),
+       x = "Condition",
+       y = "log2(TPM)") +
+  scale_fill_manual(values = c("sgEV" = "blue", 
+                               "sgNELFE" = "darkred")) + 
+  scale_color_manual(values = c("sgEV" = "white",
+                                "sgNELFE" = "white")) +
+  theme_prism(base_size = 18) + 
+  stat_compare_means(method = "t.test", paired = FALSE, label = "p.format", label.y = 7.5, label.x = 1.5)
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
