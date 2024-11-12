@@ -1,0 +1,361 @@
+---
+title: "RNA-seq analysis of NELFE dLCS"
+author: "Yotsawat Pomyen"
+date: "`r format(Sys.Date(), '%B %d, %Y')`"
+output:
+  pdf_document: default
+  html_document:
+    df_print: paged
+file: "RNA-seq_NELFE_dLCS_group1vs2_2024NOV11.Rmd"
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+## Description 
+This document is the analysis of RNA-seq experiment on dLCS recuse experiment data between group I and group II genes identified by common regions based on ATAC-seq, H3K-seq, and GRO-seq analyses. 
+
+The samples consist of Hr0, Hr2, Hr24, Full Length (FL), NELFE Knock-Down (KD), Control (EV), deletion of LCS region 1 (dLCS1), deletion of LCS region 2 (dLCS2)
+
+The assumption for this analysis is that the common regions that are affected by NELFE KO will have less RNA accessibility, thereby make the RNA expression lower too. 
+
+
+
+```{r load libraries, include=TRUE, echo=FALSE, message=FALSE}
+library(data.table)
+library(dplyr)
+library(ggprism)
+library(ggplot2)
+library(tidyverse)
+library(writexl)
+library(ggpubr)
+```
+
+```{r load data from Adams original RNA-seq quantification, include=TRUE, echo=FALSE, message=FALSE}
+## directory where the data table is 
+data.dir <- "/oceanus/collab/InternalJeff/users/hxd052/data/NELFE_condensate/RNAseq/main/rescue/counts/normalized/"
+group.dir <- "/oceanus/collab/InternalJeff/users/hxd052/data/NELFE_condensate/RNAseq/2datasheets/datasets/"
+
+## read rescue experiment data 
+rescue <- read.csv(file = paste0(data.dir,"tpm_normalized_counts.csv"),header = T, check.names = F)
+
+colnames(rescue) <- c("Gene.Name",
+                      "0_Hr.R1","0_Hr.R2","0_Hr.R3",
+                      "2_Hr.R1","2_Hr.R2","2_Hr.R3",
+                      "24Hr.R1","24Hr.R2","24Hr.R3",
+                      "EV.R1","EV.R2","EV.R3",
+                      "KO.R1","KO.R2","KO.R3",
+                      "FL.R1","FL.R2","FL.R3",
+                      "dLCS_1.R1","dLCS_1.R2","dLCS_1.R3",
+                      "dLCS_2.R1","dLCS_2.R2","dLCS_2.R3")
+
+## group I genes 
+group1 <- read.delim(file = paste0(group.dir,"groupI_genes.bed"), header = F)
+group2 <- read.delim(file = paste0(group.dir,"groupII_genes.bed"), header = F)
+
+```
+
+```{r summarize duplicated gene names using average, include=TRUE, echo=FALSE, message=FALSE}
+library(dplyr)
+## number of rows: 59251 entries
+## remove rows with all zeros, remaining: 39287 entries
+rescue <- rescue[apply(rescue[,-1], 1, function(x) !all(x==0)),]
+```
+
+```{r calculate mean of the groups, include=TRUE, echo=FALSE, message=FALSE}
+rescue_mean <- rescue %>% 
+  mutate(
+    Hr00_mean = rowMeans(dplyr::select(.,"0_Hr.R1","0_Hr.R2","0_Hr.R3")),
+    Hr02_mean = rowMeans(dplyr::select(.,"2_Hr.R1","2_Hr.R2","2_Hr.R3")),
+    Hr24_mean = rowMeans(dplyr::select(.,"24Hr.R1","24Hr.R2","24Hr.R3")),
+    EV_mean = rowMeans(dplyr::select(.,"EV.R1","EV.R2","EV.R3")),
+    KO_mean = rowMeans(dplyr::select(.,"KO.R1","KO.R2","KO.R3")),
+    FL_mean = rowMeans(dplyr::select(.,"FL.R1","FL.R2","FL.R3")),
+    dLCS_1_mean = rowMeans(dplyr::select(.,"dLCS_1.R1","dLCS_1.R2","dLCS_1.R3")),
+    dLCS_2_mean = rowMeans(dplyr::select(.,"dLCS_2.R1","dLCS_2.R2","dLCS_2.R3"))
+  ) #%>%
+  # select(Gene.Name,Hr00_mean,Hr02_mean,Hr24_mean,EV_mean,KO_mean,FL_mean,dLCS_1_mean,dLCS_2_mean)
+```
+
+```{r calculate p-value and adjusted p-value between EV and KO, include=TRUE, echo=FALSE, message=FALSE}
+## t-test function
+t.rna <- function(i){
+  tryCatch(
+    t.test(rescue_mean[i,c("EV.R1","EV.R2","EV.R3")], rescue_mean[i,c("KO.R1","KO.R2","KO.R3")], paired = F)$p.val,
+    error = function(e) {NA}
+  )
+}
+
+## calculate p-value
+rescue_mean$pval.KO <- sapply(1:nrow(rescue_mean), t.rna)
+
+## calculate adjusted p-value (FDR - BH)
+rescue_mean$adj.pval.KO <- p.adjust(rescue_mean$pval.KO, method = "BH")
+
+rescue_p <- rescue_mean %>%
+  select(Gene.Name,Hr00_mean,Hr02_mean,Hr24_mean,EV_mean,KO_mean,FL_mean,dLCS_1_mean,dLCS_2_mean,adj.pval.KO)
+
+```
+
+```{r extract genes from Hien cancer cell paper, include=TRUE, echo=FALSE, message=FALSE}
+hien_genes <- c("NELFE","PA2G4","SYNGR2","CCNE2","CDCA8","CCL20","EGR1","SERPINE1","MT2A","IER2","HBB")
+hien_tpm <- rescue_mean[rescue_mean$Gene.Name %in% hien_genes,]
+hien_tpm$log2FC <- log2((hien_tpm$KO_mean + 1)/(hien_tpm$EV_mean + 1))
+hien_tpm <- hien_tpm %>% 
+  slice(match(hien_genes,Gene.Name))
+```
+
+```{r calculate group 1 genes, include=TRUE, echo=FALSE, message=FALSE}
+## get group 1 genes counts
+g1.genes <- group1[,5]
+group1_tpm <- rescue_p %>% 
+  filter(Gene.Name %in% g1.genes) %>% drop_na()
+
+group1_tpm$sgHr00 <- log2(group1_tpm$Hr00_mean + 1)
+group1_tpm$sgHr02 <- log2(group1_tpm$Hr02_mean + 1)
+group1_tpm$sgHr24 <- log2(group1_tpm$Hr24_mean + 1)
+group1_tpm$sgEV <- log2(group1_tpm$EV_mean + 1)
+group1_tpm$sgNELFE <- log2(group1_tpm$KO_mean + 1)
+group1_tpm$sgFL <- log2(group1_tpm$FL_mean + 1)
+group1_tpm$sgLCS_1 <- log2(group1_tpm$dLCS_1_mean + 1)
+group1_tpm$sgLCS_2 <- log2(group1_tpm$dLCS_2_mean + 2)
+
+## calculate log2FC
+group1_tpm$log2FC <- log2((group1_tpm$KO_mean + 1)/(group1_tpm$EV_mean + 1))
+
+## convert to long format, select log2FC > log2(1.5)
+group1_tpm.long.up <- group1_tpm %>% 
+  # filter(log2FC > log2(1.5)) %>%
+  filter(adj.pval.KO < 0.05) %>%
+  pivot_longer(cols = c("sgHr00","sgHr02","sgHr24","sgEV","sgNELFE","sgFL","sgLCS_1","sgLCS_2"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+group1_tpm.long.KO <- group1_tpm %>% 
+  # filter(log2FC > log2(1.5)) %>%
+  filter(adj.pval.KO < 0.05) %>%
+  pivot_longer(cols = c("sgEV","sgNELFE","sgFL","sgLCS_1","sgLCS_2"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+```
+
+```{r remove outliers, include=TRUE, echo=FALSE, message=FALSE}
+remove_outliers <- function(x, na.rm = TRUE, ...) {
+  qnt <- quantile(x, probs = c(.25, .75), na.rm = na.rm, ...)
+  val <- 1.5 * IQR(x, na.rm = na.rm)
+  y <- x
+  y[x < (qnt[1] - val)] <- NA
+  y[x > (qnt[2] + val)] <- NA
+  y
+}
+```
+
+```{r boxplot Group I genes Up-regulated, fig.height=9, fig.width=12, include=TRUE, echo=FALSE, message=FALSE}
+options(digits = 6)
+g1u <- length(unique(group1_tpm.long.KO$Gene.Name))
+
+g1.cl.noOutliers <- group1_tpm.long.KO %>% 
+  group_by(Condition) %>% 
+  mutate(Expression = remove_outliers(Expression)) %>% ungroup()
+g1.cl.noOutliers$Condition <- factor(g1.cl.noOutliers$Condition,
+                                     levels = c(
+                                                # "sgHr00",
+                                                # "sgHr02",
+                                                # "sgHr24",
+                                                "sgEV",
+                                                "sgNELFE",
+                                                "sgFL",
+                                                "sgLCS_1",
+                                                "sgLCS_2"
+                                                ))
+
+lcs_comparison <- rev(list(c("sgEV","sgNELFE"),c("sgFL","sgEV"),c("sgLCS_1","sgEV"),c("sgLCS_2","sgEV")))
+
+g1.dlcs <- ggplot(g1.cl.noOutliers, aes(x = Condition, y = Expression , fill = Condition, color = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  labs(title = paste0("RNAseq Group I, n= ", g1u),
+       x = "Condition",
+       y = "log2(TPM)") +
+  scale_fill_manual(values = c(
+                               # "sgHr00" = "black",
+                               # "sgHr02" = "grey50",
+                               # "sgHr24" = "grey80",
+                               "sgEV" = "blue", 
+                               "sgNELFE" = "darkred",
+                               "sgFL" = "purple",
+                               "sgLCS_1" = "gold",
+                               "sgLCS_2" = "darkgoldenrod"
+                               )) + 
+  scale_color_manual(values = c(
+                               # "sgHr00" = "white",
+                               # "sgHr02" = "white",
+                               # "sgHr24" = "white",
+                               "sgEV" = "white", 
+                               "sgNELFE" = "white",
+                               "sgFL" = "white",
+                               "sgLCS_1" = "white",
+                               "sgLCS_2" = "white")) +
+  theme_prism(base_size = 18) +
+  stat_compare_means(comparison = lcs_comparison,method = "t.test", paired = FALSE, label = "p.format")
+ggsave(filename = "~/JMP_Pac_mutation/Dang-Lab/NELFE_condensate/RNAseq/dLCS/group1_dLCS.pdf", plot = g1.dlcs, width = 12, height = 9)
+
+g1.dlcs
+```
+
+```{r calculate group 2 genes, include=TRUE, echo=FALSE, message=FALSE}
+## get group 1 genes counts
+g2.genes <- group2[,4]
+group2_tpm <- rescue_p %>% 
+  filter(Gene.Name %in% g2.genes) %>% drop_na()
+
+group2_tpm$sgHr00 <- log2(group2_tpm$Hr00_mean + 1)
+group2_tpm$sgHr02 <- log2(group2_tpm$Hr02_mean + 1)
+group2_tpm$sgHr24 <- log2(group2_tpm$Hr24_mean + 1)
+group2_tpm$sgEV <- log2(group2_tpm$EV_mean + 1)
+group2_tpm$sgNELFE <- log2(group2_tpm$KO_mean + 1)
+group2_tpm$sgFL <- log2(group2_tpm$FL_mean + 1)
+group2_tpm$sgLCS_1 <- log2(group2_tpm$dLCS_1_mean + 1)
+group2_tpm$sgLCS_2 <- log2(group2_tpm$dLCS_2_mean + 2)
+
+## calculate log2FC
+group2_tpm$log2FC <- log2((group2_tpm$KO_mean + 1)/(group2_tpm$EV_mean + 1))
+
+## convert to long format, select log2FC > log2(1.5)
+group2_tpm.long.up <- group2_tpm %>% 
+  # filter(log2FC > log2(1.5)) %>%
+  filter(adj.pval.KO < 0.05) %>%
+  pivot_longer(cols = c("sgHr00","sgHr02","sgHr24","sgEV","sgNELFE","sgFL","sgLCS_1","sgLCS_2"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+group2_tpm.long.KO <- group2_tpm %>% 
+  # filter(log2FC > log2(1.5)) %>%
+  filter(adj.pval.KO < 0.05) %>%
+  pivot_longer(cols = c("sgEV","sgNELFE","sgFL","sgLCS_1","sgLCS_2"),
+               names_to = "Condition",
+               values_to = "Expression")
+
+```
+
+```{r boxplot Group II genes Up-regulated, fig.height=9, fig.width=12, include=TRUE, echo=FALSE, message=FALSE}
+options(digits = 6)
+g2u <- length(unique(group2_tpm.long.KO$Gene.Name))
+
+g2.cl.noOutliers <- group2_tpm.long.KO %>% 
+  group_by(Condition) %>% 
+  mutate(Expression = remove_outliers(Expression)) %>% ungroup()
+
+g2.cl.noOutliers$Condition <- factor(g2.cl.noOutliers$Condition, 
+                                     levels = c(
+                                                # "sgHr00",
+                                                # "sgHr02",
+                                                # "sgHr24",
+                                                "sgEV",
+                                                "sgNELFE",
+                                                "sgFL",
+                                                "sgLCS_1",
+                                                "sgLCS_2"
+                                                ))
+
+lcs_comparison <- rev(list(c("sgEV","sgNELFE"),c("sgFL","sgEV"),c("sgLCS_1","sgEV"),c("sgLCS_2","sgEV")))
+
+g2.dlcs <- ggplot(g2.cl.noOutliers, aes(x = Condition, y = Expression , fill = Condition, color = Condition)) +
+  geom_violin(trim = FALSE) +
+  geom_boxplot(width = 0.2)+
+  labs(title = paste0("RNAseq Group II, n= ", g2u ),
+       x = "Condition",
+       y = "log2(TPM)") +
+  scale_fill_manual(values = c(
+                               # "sgHr00" = "black",
+                               # "sgHr02" = "grey50",
+                               # "sgHr24" = "grey80",
+                               "sgEV" = "blue", 
+                               "sgNELFE" = "darkred",
+                               "sgFL" = "purple",
+                               "sgLCS_1" = "gold",
+                               "sgLCS_2" = "darkgoldenrod"
+                               )) + 
+  scale_color_manual(values = c(
+                               # "sgHr00" = "white",
+                               # "sgHr02" = "white",
+                               # "sgHr24" = "white",
+                               "sgEV" = "white", 
+                               "sgNELFE" = "white",
+                               "sgFL" = "white",
+                               "sgLCS_1" = "white",
+                               "sgLCS_2" = "white")) +
+  theme_prism(base_size = 18) +
+  stat_compare_means(comparison = lcs_comparison,method = "t.test", paired = FALSE, label = "p.format")
+
+ggsave(filename = "~/JMP_Pac_mutation/Dang-Lab/NELFE_condensate/RNAseq/dLCS/group2_dLCS.pdf", plot = g2.dlcs, width = 12, height = 9)
+
+g2.dlcs
+```
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
